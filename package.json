@@ -1,0 +1,20 @@
+{
+  "name": "excel-editor-engine",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/excel-studio"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace excel-studio",
+    "build": "npm run build --workspace excel-studio",
+    "preview": "npm run preview --workspace excel-studio",
+    "typecheck": "npm run typecheck --workspace excel-studio",
+    "test": "npm run test --workspace excel-studio",
+    "backend": "cargo run --locked --manifest-path rust-excel/Cargo.toml --bin excel-server",
+    "test:browser": "node scripts/browser-smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
+  }
+}
