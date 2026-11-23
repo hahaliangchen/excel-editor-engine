@@ -38,7 +38,8 @@ export class Grid {
   private readonly scrolls = new Map<number,{left:number;top:number}>();
   private lastIndex = 0;
 
-  constructor(private readonly store: WorkbookStore, private readonly actions: GridActions) {
+  constructor(private readonly store: WorkbookStore, private readonly actions: GridActions, private readonly readOnly = false) {
+    this.root.setAttribute('aria-readonly',String(readOnly));
     this.root.setAttribute('role','grid');
     this.root.setAttribute('aria-label','电子表格');
     this.root.setAttribute('aria-rowcount',String(ROWS));
@@ -61,7 +62,7 @@ export class Grid {
     this.root.addEventListener('pointerdown',e=>this.pointerDown(e));
     this.root.addEventListener('keydown',e=>this.key(e));
     this.root.addEventListener('copy',e=>{if(e.target===this.input)return;try{e.clipboardData?.setData('text/plain',this.store.copy());e.preventDefault();}catch(error){this.actions.error(error);}});
-    this.root.addEventListener('paste',e=>{if(e.target===this.input || !e.clipboardData?.types.includes('text/plain'))return;e.preventDefault();this.store.paste(e.clipboardData.getData('text/plain')).catch(this.actions.error);});
+    this.root.addEventListener('paste',e=>{if(this.readOnly || e.target===this.input || !e.clipboardData?.types.includes('text/plain'))return;e.preventDefault();this.store.paste(e.clipboardData.getData('text/plain')).catch(this.actions.error);});
     window.addEventListener('pointermove',e=>this.pointerMove(e),{passive:false});
     window.addEventListener('pointerup',e=>this.endPointer(e));
     window.addEventListener('pointercancel',e=>this.endPointer(e,true));
@@ -188,7 +189,7 @@ export class Grid {
   private pointerDown(e:PointerEvent) {
     if (e.button!==0 || e.target===this.input || !(e.target instanceof Element))return;
     const col=Number(e.target.closest<HTMLElement>('[data-resize]')?.dataset.resize);
-    if(col){e.preventDefault();this.actions.commit();this.resize={col,x:e.clientX,start:this.offsets[col]-this.x(col),width:this.offsets[col]-this.x(col),id:e.pointerId};this.root.classList.add('resizing');return;}
+    if(col && !this.readOnly){e.preventDefault();this.actions.commit();this.resize={col,x:e.clientX,start:this.offsets[col]-this.x(col),width:this.offsets[col]-this.x(col),id:e.pointerId};this.root.classList.add('resizing');return;}
     const p=this.coordinateTarget(e.target);if(!p)return;
     e.preventDefault();this.actions.commit();this.focus();
     const at=this.rangeFor(p.at).start;
@@ -256,7 +257,7 @@ export class Grid {
       }
       this.store.locate(p,e.shiftKey);this.reveal(p);
     } else if(e.key==='F2'){e.preventDefault();this.actions.start(this.store.active);}
-    else if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();this.store.clear().catch(this.actions.error);}
+    else if(!this.readOnly && (e.key==='Delete'||e.key==='Backspace')){e.preventDefault();this.store.clear().catch(this.actions.error);}
     else if(cmd && e.key.toLowerCase()==='a'){e.preventDefault();this.store.selectArea({row:1,col:1},{row:ROWS,col:COLS});}
     else if(!cmd && !e.altKey && e.key.length===1){e.preventDefault();this.actions.start(this.store.active,e.key);}
   }

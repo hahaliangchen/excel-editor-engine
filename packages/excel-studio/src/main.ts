@@ -1,3 +1,4 @@
+import { connectStudio, fetchStudioFile, preview } from './quickagent-preview';
 import './styles/studio.css';
 import {ApiClient} from './api-client';
 import {button,element as el,icon,menu,segment} from './components/controls';
@@ -81,7 +82,7 @@ const discard=button('取消编辑','x',undefined,'formula-action');discard.hidd
 formulaBar.append(address,fxMark,fx,discard,accept);
 
 const sheetBody=el('main','sheet-body');sheetBody.setAttribute('aria-label','工作表');
-const grid=new Grid(store,{start:startInline,draft:setDraft,commit,cancel,error:showError});
+const grid=new Grid(store,{start:startInline,draft:setDraft,commit,cancel,error:showError},preview);
 const drop=el('div','drop-overlay');const dropLabel=el('div','drop-label');dropLabel.append(icon('folder-open'),el('span','','导入 .xlsx'));drop.append(dropLabel);drop.hidden=true;
 const searchPanel=el('form','search-panel');searchPanel.setAttribute('role','search');searchPanel.hidden=true;
 const searchTerm=el('input','search-term');searchTerm.placeholder='查找值或公式';searchTerm.setAttribute('aria-label','查找值或公式');
@@ -125,12 +126,13 @@ app.append(header,toolbar,formulaBar,sheetBody,sheetbar,statusbar,toast,dialog);
 
 function editUI() {accept.hidden=!draft;discard.hidden=!draft;fx.classList.toggle('editing',!!draft);}
 function begin(at:Coord,text?:string) {
+  if(preview)return;
   const original=store.sheet.cells[toA1(at)]?.raw??'';
   draft={coord:at,sheet:store.sheet.name,text:text??original,original};
   fx.value=draft.text;editUI();
 }
-function startInline(at:Coord,text?:string) {commit();begin(at,text);grid.openEditor(at,draft!.text);}
-function setDraft(text:string) {if(!draft)begin(store.active);draft!.text=text;if(fx.value!==text)fx.value=text;grid.updateEditor(text);}
+function startInline(at:Coord,text?:string) {if(preview)return;commit();begin(at,text);grid.openEditor(at,draft!.text);}
+function setDraft(text:string) {if(preview)return;if(!draft)begin(store.active);draft!.text=text;if(fx.value!==text)fx.value=text;grid.updateEditor(text);}
 function commit(move?:{row:number;col:number}) {
   if(draft) {
     const edit=draft;draft=undefined;grid.closeEditor();editUI();
@@ -193,7 +195,7 @@ function refreshTabs() {
   tabs.replaceChildren(...store.workbook.sheets.map((s,i)=>{
     const tab=button(s.name,undefined,s.name,'sheet-tab');tab.dataset.sheetTab=String(i);tab.setAttribute('role','tab');tab.setAttribute('aria-selected',String(i===store.index));tab.tabIndex=i===store.index?0:-1;
     tab.addEventListener('click',()=>{commit();store.switchSheet(i);grid.focus();});
-    tab.addEventListener('dblclick',()=>void renameSheet());
+    if(!preview)tab.addEventListener('dblclick',()=>void renameSheet());
     tab.addEventListener('keydown',e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();commit();store.switchSheet((i+store.workbook.sheets.length+(e.key==='ArrowLeft'?-1:1))%store.workbook.sheets.length);tabs.querySelector<HTMLButtonElement>('[aria-selected="true"]')?.focus();}});
     return tab;
   }));
@@ -213,6 +215,7 @@ const loadSample=()=>load(()=>api.sample(),'2026 Q1 营收分析');
 sample.addEventListener('click',()=>void loadSample());fresh.addEventListener('click',()=>void load(()=>api.create(),'未命名工作簿'));
 open.addEventListener('click',()=>file.click());
 function loadFile(selected:File){
+  if(preview)return;
   if(!/\.xlsx$/i.test(selected.name)){showError(new Error('请选择 .xlsx 文件'));return;}
   if(selected.size>32*1024*1024){showError(new Error('文件不能超过 32 MiB'));return;}
   return load(()=>api.parse(selected),selected.name.replace(/\.xlsx$/i,''));
@@ -276,6 +279,7 @@ document.addEventListener('keydown',e=>{
   if(!(e.ctrlKey||e.metaKey)||e.isComposing||dialog.open)return;
   const key=e.key.toLowerCase();
   if(key==='f'){e.preventDefault();showSearch();return;}
+  if(preview)return;
   if(key==='s'){e.preventDefault();if(!save.disabled)save.click();return;}
   if(e.target instanceof HTMLInputElement)return;
   if(key==='z'){e.preventDefault();if(e.shiftKey)doRedo();else doUndo();}
@@ -283,4 +287,20 @@ document.addEventListener('keydown',e=>{
   else if(key==='b'){e.preventDefault();toggleBold();}
   else if(key==='i'){e.preventDefault();toggleItalic();}
 });
-updateTheme();refreshBusy();refreshTabs();refreshSelection();void loadSample();
+if(preview){
+  for(const node of [sample,fresh,open,save,toolbar,newSheet,sheetMenu.root])node.style.display='none';
+  fx.readOnly=true;
+}
+updateTheme();refreshBusy();refreshTabs();refreshSelection();
+const hosted=connectStudio({kind:'excel',theme(value){document.documentElement.dataset.theme=value;updateTheme();},error:showError,async load(url,name,signal,reload){
+  const selected=await fetchStudioFile(url,name,signal);
+  if(!/\.xlsx$/i.test(name)||selected.size>32*1024*1024)throw new Error('仅支持 32 MiB 以内的 .xlsx 文件');
+  const w=await api.parse(selected);
+  if(signal.aborted)return;
+  const sheet=reload?store.sheet.name:undefined;
+  cancel();store.load(w,name.replace(/\.xlsx$/i,''));
+  const index=w.sheets.findIndex(item=>item.name===sheet);
+  if(index>0)store.switchSheet(index);
+  return {sheets:w.sheets.length};
+}});
+if(!hosted)void loadSample();
