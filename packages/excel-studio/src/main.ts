@@ -303,4 +303,74 @@ const hosted=connectStudio({kind:'excel',theme(value){document.documentElement.d
   if(index>0)store.switchSheet(index);
   return {sheets:w.sheets.length};
 }});
+interface AiExcelSyncPayload{sheet?:string;range?:string;column?:string;row?:number;findColumn?:string;findValue?:string;}
+function parseExcelCol(spec:string|undefined):number|undefined{
+  if(!spec||!spec.trim())return undefined;
+  const trimmed=spec.trim();
+  const sheet=store.sheet;
+  // First match row-1 header text (exact then substring)
+  const headerEntries=Object.entries(sheet.cells)
+    .map(([addr,cell])=>{const m=/^([A-Z]+)1$/.exec(addr);if(!m)return null;let col=0;for(const ch of m[1])col=col*26+ch.charCodeAt(0)-64;return {col,text:(cell.display||cell.raw||'').trim()};})
+    .filter((item):item is {col:number;text:string}=>item!==null&&item.text!=='');
+  const exactHeader=headerEntries.find(item=>item.text.toLowerCase()===trimmed.toLowerCase());
+  if(exactHeader)return exactHeader.col;
+  if(/^\d+$/.test(trimmed)){const n=Number(trimmed);if(n>=1&&n<=16384)return n;}
+  if(/^[A-Za-z]{1,3}$/.test(trimmed)){let col=0;for(const ch of trimmed.toUpperCase())col=col*26+ch.charCodeAt(0)-64;if(col>=1&&col<=16384)return col;}
+  const partialHeader=headerEntries.find(item=>item.text.toLowerCase().includes(trimmed.toLowerCase()));
+  return partialHeader?.col;
+}
+function sheetExtents():{rows:number;cols:number}{
+  let rows=1,cols=1;
+  for(const addr of Object.keys(store.sheet.cells)){
+    const m=/^([A-Z]+)(\d+)$/.exec(addr);if(!m)continue;
+    let c=0;for(const ch of m[1])c=c*26+ch.charCodeAt(0)-64;
+    rows=Math.max(rows,Number(m[2]));cols=Math.max(cols,c);
+  }
+  return {rows,cols};
+}
+function applyExcelSync(detail:AiExcelSyncPayload){
+  if(detail.sheet){
+    const idx=store.workbook.sheets.findIndex(s=>s.name.toLowerCase()===detail.sheet!.trim().toLowerCase());
+    if(idx>=0&&idx!==store.index){cancel();store.switchSheet(idx);}
+  }
+  const ext=sheetExtents();
+  const parseA1=(addr:string)=>{const m=/^([A-Za-z]+)(\d+)$/.exec(addr.trim());if(!m)return undefined;let col=0;for(const ch of m[1].toUpperCase())col=col*26+ch.charCodeAt(0)-64;return {row:Number(m[2]),col};};
+  if(detail.range){
+    const raw=detail.range.trim();
+    const colSpan=/^([A-Za-z]+):([A-Za-z]+)$/.exec(raw);
+    if(colSpan){
+      const c1=parseExcelCol(colSpan[1]),c2=parseExcelCol(colSpan[2]);
+      if(c1&&c2){store.selectArea({row:1,col:c1},{row:ext.rows,col:c2});grid.reveal({row:1,col:c1},true);return;}
+    }
+    const rowSpan=/^(\d+):(\d+)$/.exec(raw);
+    if(rowSpan){
+      const r1=Math.max(1,Number(rowSpan[1])),r2=Math.max(1,Number(rowSpan[2]));
+      store.selectArea({row:r1,col:1},{row:r2,col:ext.cols});grid.reveal({row:r1,col:1},true);return;
+    }
+    const [a,b]=raw.split(':');
+    const p1=parseA1(a),p2=b?parseA1(b):p1;
+    if(p1&&p2){store.selectArea(p1,p2);grid.reveal(p1,true);return;}
+  }
+  const col=parseExcelCol(detail.column);
+  let row=typeof detail.row==='number'&&Number.isFinite(detail.row)&&detail.row>=1?Math.floor(detail.row):undefined;
+  if(row===undefined&&detail.findValue){
+    const needle=detail.findValue.toLowerCase();
+    const searchCol=parseExcelCol(detail.findColumn)??col;
+    let bestRow:number|undefined;
+    for(const [addr,cell] of Object.entries(store.sheet.cells)){
+      const m=/^([A-Z]+)(\d+)$/.exec(addr);if(!m)continue;
+      let c=0;for(const ch of m[1])c=c*26+ch.charCodeAt(0)-64;
+      const r=Number(m[2]);
+      if(searchCol!==undefined&&c!==searchCol)continue;
+      if((cell.display||cell.raw||'').toLowerCase().includes(needle)){
+        if(bestRow===undefined||r<bestRow)bestRow=r;
+      }
+    }
+    row=bestRow;
+  }
+  if(col!==undefined&&row!==undefined){store.locate({row,col});grid.reveal({row,col},true);}
+  else if(col!==undefined){store.selectArea({row:1,col},{row:ext.rows,col});grid.reveal({row:1,col},true);}
+  else if(row!==undefined){store.selectArea({row,col:1},{row,col:ext.cols});grid.reveal({row,col:1},true);}
+}
+addEventListener('message',e=>{if(parent===window||e.source!==parent||e.origin!==location.origin)return;if(e.data?.type==='quickagent:excel-sync'&&e.data.detail&&typeof e.data.detail==='object')applyExcelSync(e.data.detail as AiExcelSyncPayload);});
 if(!hosted)void loadSample();

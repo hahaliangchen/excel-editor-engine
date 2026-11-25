@@ -65,6 +65,80 @@ export class ResultGrid {
   get count(){return this.visible.length;}
   refresh(){this.paint();}
   notifySelection(){this.onSelect?.();}
+  private resolveColumnIndex(spec:string|number|undefined):number|undefined{
+    const cols=this.tab?.page?.columns;
+    if(!cols||!cols.length||spec===undefined||spec==='')return undefined;
+    if(typeof spec==='number'){return spec>=1&&spec<=cols.length?Math.floor(spec):undefined;}
+    const trimmed=spec.trim();
+    if(!trimmed)return undefined;
+    const exact=cols.findIndex(c=>c.name.toLowerCase()===trimmed.toLowerCase());
+    if(exact>=0)return exact+1;
+    if(/^\d+$/.test(trimmed)){const n=Number(trimmed);if(n>=1&&n<=cols.length)return n;}
+    if(/^[A-Za-z]{1,3}$/.test(trimmed)){
+      let n=0;for(const ch of trimmed.toUpperCase())n=n*26+ch.charCodeAt(0)-64;
+      if(n>=1&&n<=cols.length)return n;
+    }
+    const partial=cols.findIndex(c=>c.name.toLowerCase().includes(trimmed.toLowerCase()));
+    return partial>=0?partial+1:undefined;
+  }
+  selectTarget(target:{column?:string|number;row?:number;range?:string;findColumn?:string;findValue?:string}):string|null{
+    const page=this.tab?.page;
+    if(!page||!page.columns.length)return null;
+    const parseA1=(addr:string):Coord|undefined=>{
+      const m=/^([A-Za-z]+)(\d+)$/.exec(addr.trim());
+      if(!m)return undefined;
+      let col=0;for(const ch of m[1].toUpperCase())col=col*26+ch.charCodeAt(0)-64;
+      return {row:Number(m[2]),col};
+    };
+    if(target.range){
+      const raw=target.range.trim();
+      const colSpan=/^([A-Za-z]+):([A-Za-z]+)$/.exec(raw);
+      if(colSpan){
+        const c1=this.resolveColumnIndex(colSpan[1]),c2=this.resolveColumnIndex(colSpan[2]);
+        if(c1&&c2){this.model.selectArea({row:1,col:c1},{row:this.model.rows,col:c2});this.engine.reveal({row:Math.min(2,this.model.rows),col:c1},true);return `${page.columns[c1-1]?.name??raw}`;}
+      }
+      const rowSpan=/^(\d+):(\d+)$/.exec(raw);
+      if(rowSpan){
+        const r1=Math.min(this.model.rows,Math.max(1,Number(rowSpan[1])+1));
+        const r2=Math.min(this.model.rows,Math.max(1,Number(rowSpan[2])+1));
+        this.model.selectArea({row:r1,col:1},{row:r2,col:this.model.cols});this.engine.reveal({row:r1,col:1},true);return `第 ${rowSpan[1]}-${rowSpan[2]} 行`;
+      }
+      const [a,b]=raw.split(':');
+      const p1=parseA1(a),p2=b?parseA1(b):p1;
+      if(p1&&p2){this.model.selectArea(p1,p2);this.engine.reveal(p1,true);return raw;}
+    }
+    const col=this.resolveColumnIndex(target.column);
+    let dataRowIndex:number|undefined;
+    if(typeof target.row==='number'&&Number.isFinite(target.row)&&target.row>=1){
+      dataRowIndex=Math.min(this.visible.length,Math.floor(target.row))-1;
+    }else if(target.findValue){
+      const needle=target.findValue.toLowerCase();
+      const searchCol=this.resolveColumnIndex(target.findColumn)??col;
+      const foundIdx=this.visible.findIndex(rIdx=>{
+        if(searchCol!==undefined)return text(this.value(rIdx,searchCol-1)).toLowerCase().includes(needle);
+        return page.columns.some((_,ci)=>text(this.value(rIdx,ci)).toLowerCase().includes(needle));
+      });
+      if(foundIdx>=0)dataRowIndex=foundIdx;
+    }
+    if(col!==undefined&&dataRowIndex!==undefined&&dataRowIndex>=0){
+      const gridRow=dataRowIndex+2;
+      this.model.locate({row:gridRow,col});
+      this.engine.reveal({row:gridRow,col},true);
+      return `${page.columns[col-1]?.name??''} 第 ${dataRowIndex+1} 行`;
+    }
+    if(col!==undefined){
+      this.model.selectArea({row:1,col},{row:this.model.rows,col});
+      this.engine.reveal({row:Math.min(2,this.model.rows),col},true);
+      return `列 ${page.columns[col-1]?.name??col}`;
+    }
+    if(dataRowIndex!==undefined&&dataRowIndex>=0){
+      const gridRow=dataRowIndex+2;
+      this.model.selectArea({row:gridRow,col:1},{row:gridRow,col:this.model.cols});
+      this.engine.reveal({row:gridRow,col:1},true);
+      return `第 ${dataRowIndex+1} 行`;
+    }
+    return null;
+  }
   snapshot(maxRows=15,maxCellChars=160){
     const page=this.tab?.page;
     if(!page)return {columns:[] as string[],totalVisible:0,selectedRowCount:0,selectedRows:[] as Record<string,string>[],sampleRows:[] as Record<string,string>[]};
@@ -97,7 +171,9 @@ export class ResultGrid {
     const wb:Workbook={sheets:[{name:'Result',cells,widths:{...defaults,...this.widths},frozen:true,merges:[]}]};
     this.model.rows=this.visible.length+1;this.model.cols=page?.columns.length||1;
     const grid=this.engine.viewport;const top=grid.scrollTop,left=grid.scrollLeft;
-    this.model.load(wb,'结果');this.model.locate(old);grid.scrollTo(left,top);
+    this.model.load(wb,'结果');
+    this.engine.setBounds(this.model.rows,this.model.cols);
+    this.model.locate(old);grid.scrollTo(left,top);
     this.root.setAttribute('aria-rowcount',String(this.model.rows));this.root.setAttribute('aria-colcount',String(this.model.cols));
   }
   private start(p:Coord,raw?:string){

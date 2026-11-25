@@ -16,7 +16,7 @@ assert(!/(?:src|href)="(?:https?:)?\/\//i.test(html),'bundle contains an externa
 for(const asset of html.matchAll(/(?:src|href)="\.\/([^"]+)"/g))await access(join(root,'page',asset[1]));
 assert.match(html,/rel="stylesheet"[^>]*href="\.\/assets\/.+\.css"/);
 assert.match(await readFile(join(root,'SKILL.md'),'utf8'),/^---\nname: excel\n/);
-assert.equal(new Set(manifest.command_tools.map(t=>t.name)).size,8);
+assert.equal(new Set(manifest.command_tools.map(t=>t.name)).size,9);
 const bin=join(root,manifest.local_service.program);
 const binInfo=await stat(bin);
 assert(binInfo.isFile() && (binInfo.mode&0o111)!==0);

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use std::io::{self, BufRead, Read, Write};
 pub const MAX_OUT: usize = 200 * 1024;
 const MAX_IN: u64 = 1024 * 1024;
-pub const TOOLS: [&str; 8] = [
+pub const TOOLS: [&str; 9] = [
     "db__list_connections",
     "db__save_connection",
     "db__inspect_schema",
@@ -13,6 +13,7 @@ pub const TOOLS: [&str; 8] = [
     "db__execute",
     "db__export_xlsx",
     "db__import_xlsx",
+    "db__focus_view",
 ];
 fn error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message.chars().take(1024).collect::<String>()}})

@@ -103,57 +103,146 @@ fn row_values(r: &MySqlRow) -> Result<Vec<Value>> {
         })
         .collect()
 }
+fn mysql_opt_text(r: &MySqlRow, i: usize) -> Result<Option<String>> {
+    let raw = r.try_get_raw(i)?;
+    if raw.is_null() {
+        return Ok(None);
+    }
+    if let Ok(text) = r.try_get::<String, _>(i) {
+        return Ok(Some(text));
+    }
+    let bytes: Vec<u8> = r.try_get(i)?;
+    Ok(Some(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn mysql_text(r: &MySqlRow, i: usize) -> Result<String> {
+    Ok(mysql_opt_text(r, i)?.unwrap_or_default())
+}
+
 impl DbDriver for Mysql {
     async fn test_conn(&self) -> Result<String> {
-        Ok(sqlx::query_scalar("SELECT VERSION()")
-            .fetch_one(&self.pool)
-            .await?)
+        let row = sqlx::query("SELECT VERSION()").fetch_one(&self.pool).await?;
+        mysql_text(&row, 0)
     }
     async fn list_schemas(&self) -> Result<Vec<String>> {
-        Ok(sqlx::query_scalar("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') ORDER BY SCHEMA_NAME LIMIT 10001").fetch_all(&self.pool).await?)
+        let rows = sqlx::query("SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('information_schema','performance_schema','mysql','sys') ORDER BY SCHEMA_NAME LIMIT 10001")
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(|r| mysql_text(r, 0)).collect()
     }
     async fn list_tables(&self, schema: &str) -> Result<Vec<Value>> {
-        let rows=sqlx::query("SELECT TABLE_NAME,TABLE_TYPE,CAST(TABLE_ROWS AS UNSIGNED) FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME LIMIT 10001").bind(schema).fetch_all(&self.pool).await?;
-        Ok(rows.iter().map(|r|json!({"name":r.get::<String,_>(0),"kind":if r.get::<String,_>(1)=="BASE TABLE"{"table"}else{"view"},"estimated_rows":r.get::<Option<u64>,_>(2).map(safe_u64)})).collect())
+        let rows = sqlx::query("SELECT TABLE_NAME,TABLE_TYPE,CAST(TABLE_ROWS AS UNSIGNED) FROM information_schema.TABLES WHERE TABLE_SCHEMA=? ORDER BY TABLE_NAME LIMIT 10001")
+            .bind(schema)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter()
+            .map(|r| {
+                let name = mysql_text(r, 0)?;
+                let kind = if mysql_text(r, 1)? == "BASE TABLE" {
+                    "table"
+                } else {
+                    "view"
+                };
+                let estimated_rows = r.try_get::<Option<u64>, _>(2)?.map(safe_u64);
+                Ok(json!({"name": name, "kind": kind, "estimated_rows": estimated_rows}))
+            })
+            .collect()
     }
     async fn describe_table(&self, schema: &str, table: &str, ddl: bool) -> Result<Value> {
         let mut c = self.pool.acquire().await?;
-        let table_kind=sqlx::query_scalar::<_,String>("SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?").bind(schema).bind(table).fetch_optional(&mut *c).await?.context("table not found")?;
+        let table_kind_row = sqlx::query(
+            "SELECT TABLE_TYPE FROM information_schema.TABLES WHERE TABLE_SCHEMA=? AND TABLE_NAME=?",
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_optional(&mut *c)
+        .await?
+        .context("table not found")?;
+        let table_kind = mysql_text(&table_kind_row, 0)?;
         let kind = if table_kind == "BASE TABLE" {
             "table"
         } else {
             "view"
         };
-        let cols=sqlx::query("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION").bind(schema).bind(table).fetch_all(&mut *c).await?;
-        let keys:Vec<String>=sqlx::query_scalar("SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION").bind(schema).bind(table).fetch_all(&mut *c).await?;
-        let columns=cols.iter().map(|r| { let name=r.get::<String,_>(0); json!({"name":name,"type":r.get::<String,_>(1),"nullable":r.get::<String,_>(2)=="YES","default":r.get::<Option<String>,_>(3),"primary_key":keys.contains(&name),"generated":r.get::<String,_>(4).contains("GENERATED")})}).collect::<Vec<_>>();
-        let indexes=sqlx::query("SELECT INDEX_NAME,CAST(NON_UNIQUE AS SIGNED),COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY INDEX_NAME,SEQ_IN_INDEX").bind(schema).bind(table).fetch_all(&mut *c).await?;
+        let cols = sqlx::query("SELECT COLUMN_NAME,COLUMN_TYPE,IS_NULLABLE,COLUMN_DEFAULT,EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY ORDINAL_POSITION")
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&mut *c)
+            .await?;
+        let key_rows = sqlx::query("SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND CONSTRAINT_NAME='PRIMARY' ORDER BY ORDINAL_POSITION")
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&mut *c)
+            .await?;
+        let keys: Vec<String> = key_rows
+            .iter()
+            .map(|r| mysql_text(r, 0))
+            .collect::<Result<_>>()?;
+        let columns: Vec<Value> = cols
+            .iter()
+            .map(|r| {
+                let name = mysql_text(r, 0)?;
+                let col_type = mysql_text(r, 1)?;
+                let nullable = mysql_text(r, 2)? == "YES";
+                let default = mysql_opt_text(r, 3)?;
+                let extra = mysql_text(r, 4)?;
+                Ok(json!({
+                    "name": name,
+                    "type": col_type,
+                    "nullable": nullable,
+                    "default": default,
+                    "primary_key": keys.contains(&name),
+                    "generated": extra.contains("GENERATED"),
+                }))
+            })
+            .collect::<Result<_>>()?;
+        let indexes = sqlx::query("SELECT INDEX_NAME,CAST(NON_UNIQUE AS SIGNED),COLUMN_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? ORDER BY INDEX_NAME,SEQ_IN_INDEX")
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&mut *c)
+            .await?;
         let mut grouped = std::collections::BTreeMap::<String, (bool, Vec<Option<String>>)>::new();
         for r in indexes {
+            let idx_name = mysql_text(&r, 0)?;
+            let non_unique = r.try_get::<i64, _>(1)? == 0;
+            let col_name = mysql_opt_text(&r, 2)?;
             grouped
-                .entry(r.get(0))
-                .or_insert_with(|| (r.get::<i64, _>(1) == 0, vec![]))
+                .entry(idx_name)
+                .or_insert_with(|| (non_unique, vec![]))
                 .1
-                .push(r.get(2));
+                .push(col_name);
         }
         let indexes = grouped
             .into_iter()
             .map(|(n, (u, c))| json!({"name":n,"unique":u,"columns":c}))
             .collect::<Vec<_>>();
-        let fks=sqlx::query("SELECT k.CONSTRAINT_NAME,k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.TABLE_NAME=k.TABLE_NAME AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME WHERE k.TABLE_SCHEMA=? AND k.TABLE_NAME=? AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME,k.ORDINAL_POSITION").bind(schema).bind(table).fetch_all(&mut *c).await?;
-        let foreign=fks.iter().map(|r|json!({"name":r.get::<String,_>(0),"column":r.get::<String,_>(1),"references_schema":r.get::<String,_>(2),"references_table":r.get::<String,_>(3),"references_column":r.get::<String,_>(4),"on_update":r.get::<String,_>(5),"on_delete":r.get::<String,_>(6)})).collect::<Vec<_>>();
+        let fks = sqlx::query("SELECT k.CONSTRAINT_NAME,k.COLUMN_NAME,k.REFERENCED_TABLE_SCHEMA,k.REFERENCED_TABLE_NAME,k.REFERENCED_COLUMN_NAME,r.UPDATE_RULE,r.DELETE_RULE FROM information_schema.KEY_COLUMN_USAGE k JOIN information_schema.REFERENTIAL_CONSTRAINTS r ON r.CONSTRAINT_SCHEMA=k.CONSTRAINT_SCHEMA AND r.TABLE_NAME=k.TABLE_NAME AND r.CONSTRAINT_NAME=k.CONSTRAINT_NAME WHERE k.TABLE_SCHEMA=? AND k.TABLE_NAME=? AND k.REFERENCED_TABLE_NAME IS NOT NULL ORDER BY k.CONSTRAINT_NAME,k.ORDINAL_POSITION")
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&mut *c)
+            .await?;
+        let foreign: Vec<Value> = fks
+            .iter()
+            .map(|r| {
+                Ok(json!({
+                    "name": mysql_text(r, 0)?,
+                    "column": mysql_text(r, 1)?,
+                    "references_schema": mysql_text(r, 2)?,
+                    "references_table": mysql_text(r, 3)?,
+                    "references_column": mysql_text(r, 4)?,
+                    "on_update": mysql_text(r, 5)?,
+                    "on_delete": mysql_text(r, 6)?,
+                }))
+            })
+            .collect::<Result<_>>()?;
         let create = if ddl {
             let stmt = format!(
                 "SHOW CREATE {} {}",
                 if kind == "table" { "TABLE" } else { "VIEW" },
                 qualified(Kind::Mysql, schema, table)?
             );
-            Some(
-                sqlx::query(&stmt)
-                    .fetch_one(&mut *c)
-                    .await?
-                    .try_get::<String, _>(1)?,
-            )
+            let row = sqlx::query(&stmt).fetch_one(&mut *c).await?;
+            Some(mysql_text(&row, 1)?)
         } else {
             None
         };

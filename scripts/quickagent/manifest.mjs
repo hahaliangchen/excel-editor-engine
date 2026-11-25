@@ -47,6 +47,21 @@ const tools=[
   tool('create_xlsx','从结构化多表数据、样式和公式生成标准 XLSX，默认不覆盖文件。',{
     overwrite:bool('允许覆盖已存在的工作簿'),workbook:object({sheets:{type:'array',items:workbookSheet,minItems:1}},['sheets']),
   },['workbook']),
+  {
+    name:'excel__focus_view',
+    description:'在左侧 Excel 工作台视图中切换工作表、选中指定列/行/单元格或区域并自动滚动到视野内。',
+    program:'bin/excel-server',
+    args:['--tool'],
+    input_schema:object({
+      path:text('可选工作区相对 .xlsx 路径'),
+      sheet:text('可选工作表名称'),
+      range:text('可选 A1 选区，如 F:F、25:25、F25 或 B5:D10'),
+      column:text('可选列字母（如 F）、1-based 列号或首行表头名称（如 日报内容）；仅传 column 时选中整列并横向滚到该列'),
+      row:integer('可选 1-based 行号；仅传 row 时选中整行并纵向滚到该行',1,1048576),
+      find_column:text('可选：配合 find_value 限定搜索列（列字母或表头名）'),
+      find_value:text('可选：在当前工作表按子串定位首条匹配行并滚动选中'),
+    }),
+  },
 ];
 
 export const manifest={

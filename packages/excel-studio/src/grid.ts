@@ -26,7 +26,10 @@ export class Grid {
   private readonly corner = el('button','grid-corner') as HTMLButtonElement;
   private readonly frozen = el('div','frozen-plane');
   private readonly input = el('input','inline-edit') as HTMLInputElement;
-  private offsets = new Float64Array(COLS+1);
+  private offsets = new Float64Array(64);
+  private maxRows = ROWS;
+  private maxCols = COLS;
+  private explicitBounds = false;
   private currentSheet?: Sheet;
   private merges: Range[] = [];
   private frame = 0;
@@ -47,7 +50,7 @@ export class Grid {
     this.viewport.tabIndex=0;
     this.viewport.setAttribute('aria-label','单元格');
     this.corner.type='button'; this.corner.title='选择整张工作表'; this.corner.setAttribute('aria-label',this.corner.title);
-    this.corner.addEventListener('click',()=>{this.store.selectArea({row:1,col:1},{row:ROWS,col:COLS});this.focus();});
+    this.corner.addEventListener('click',()=>{this.store.selectArea({row:1,col:1},{row:this.maxRows,col:this.maxCols});this.focus();});
     this.spacer.append(this.plane,this.input);this.viewport.append(this.spacer);
     this.root.append(this.viewport,this.frozen,this.columnHeads,this.rowHeads,this.corner);
     this.input.type='text';this.input.hidden=true;this.input.setAttribute('aria-label','编辑单元格');this.input.spellcheck=false;
@@ -81,25 +84,64 @@ export class Grid {
     this.rebuild();this.schedule();
   }
   focus() {this.viewport.focus({preventScroll:true});}
+  setBounds(rows: number, cols: number) {
+    this.explicitBounds = true;
+    const nextRows = Math.min(ROWS, Math.max(1, Math.floor(rows)));
+    const nextCols = Math.min(COLS, Math.max(1, Math.floor(cols)));
+    if (nextRows === this.maxRows && nextCols === this.maxCols) return;
+    this.maxRows = nextRows;
+    this.maxCols = nextCols;
+    this.root.setAttribute('aria-rowcount', String(this.maxRows));
+    this.root.setAttribute('aria-colcount', String(this.maxCols));
+    this.rebuild();
+    this.schedule();
+  }
   private get baseRow() {return this.store.sheet.frozen ? 2 : 1;}
   private get frozenHeight() {return this.store.sheet.frozen ? ROW_H : 0;}
   private rebuild() {
     const sheet = this.store.sheet;
     this.currentSheet=sheet;this.merges=sheetMerges(sheet);
+    if (!this.explicitBounds) {
+      let usedRows = 0, usedCols = 0;
+      for (const addr of Object.keys(sheet.cells)) {
+        const m = /^([A-Z]+)(\d+)$/.exec(addr);
+        if (!m) continue;
+        const r = Number(m[2]);
+        let c = 0;
+        for (const ch of m[1]) c = c * 26 + ch.charCodeAt(0) - 64;
+        if (r > usedRows) usedRows = r;
+        if (c > usedCols) usedCols = c;
+      }
+      for (const m of this.merges) {
+        if (m.end.row > usedRows) usedRows = m.end.row;
+        if (m.end.col > usedCols) usedCols = m.end.col;
+      }
+      const sel = this.store.range;
+      usedRows = Math.max(usedRows, sel.end.row);
+      usedCols = Math.max(usedCols, sel.end.col);
+      this.maxRows = Math.min(ROWS, Math.max(usedRows + 24, 50));
+      this.maxCols = Math.min(COLS, Math.max(usedCols + 6, 16));
+      this.root.setAttribute('aria-rowcount', String(this.maxRows));
+      this.root.setAttribute('aria-colcount', String(this.maxCols));
+    }
     this.root.style.setProperty('--frozen',this.frozenHeight+'px');
     this.frozen.hidden=!sheet.frozen;
     this.rebuildWidths();
-    this.spacer.style.height=((ROWS-this.baseRow+1)*ROW_H)+'px';
+    this.spacer.style.height=(Math.max(1,this.maxRows-this.baseRow+1)*ROW_H)+'px';
   }
   private rebuildWidths() {
     const widths = this.store.sheet.widths;
-    for(let c=1;c<=COLS;c++) this.offsets[c]=this.offsets[c-1]+(this.resize?.col===c ? this.resize.width : widths[c]!==undefined ? widthToPx(widths[c]) : DEFAULT_WIDTH);
-    this.spacer.style.width=this.offsets[COLS]+'px';
+    if (this.offsets.length < this.maxCols + 1) {
+      this.offsets = new Float64Array(Math.max(this.maxCols + 1, this.offsets.length * 2));
+    }
+    this.offsets[0] = 0;
+    for(let c=1;c<=this.maxCols;c++) this.offsets[c]=this.offsets[c-1]+(this.resize?.col===c ? this.resize.width : widths[c]!==undefined ? widthToPx(widths[c]) : DEFAULT_WIDTH);
+    this.spacer.style.width=this.offsets[this.maxCols]+'px';
   }
   private schedule() {if (!this.frame) this.frame=requestAnimationFrame(()=>{this.frame=0;this.render();});}
-  private x(col: number) {return this.offsets[col-1];}
+  private x(col: number) {return this.offsets[Math.min(col,this.maxCols)-1];}
   private colAt(px: number) {
-    let low=1,high=COLS;
+    let low=1,high=this.maxCols;
     while (low<high) {const mid=(low+high)>>1;if (this.offsets[mid]>px) high=mid;else low=mid+1;}
     return low;
   }
@@ -135,9 +177,9 @@ export class Grid {
   private render() {
     if (!this.viewport.clientWidth || !this.viewport.clientHeight) return;
     const {scrollLeft:left,scrollTop:top,clientWidth:w,clientHeight:h}=this.viewport;
-    const c0=Math.max(1,this.colAt(left)-2),c1=Math.min(COLS,this.colAt(left+w)+2);
+    const c0=Math.max(1,this.colAt(left)-2),c1=Math.min(this.maxCols,this.colAt(left+w)+2);
     const r0=Math.max(this.baseRow,this.baseRow+Math.floor(top/ROW_H)-3);
-    const r1=Math.min(ROWS,this.baseRow+Math.floor((top+h)/ROW_H)+3);
+    const r1=Math.min(this.maxRows,this.baseRow+Math.floor((top+h)/ROW_H)+3);
     const selected=this.store.range;
     const windowRange=bounds({row:r0,col:c0},{row:r1,col:c1});
     const matching=this.merges.filter(m=>overlaps(m,windowRange));
@@ -205,8 +247,8 @@ export class Grid {
     if(drag.mode==='cell'){
       if (sameCoord(this.store.selection.anchor,drag.anchor) && sameCoord(this.store.selection.focus,at)) return;
       this.store.selectArea(drag.anchor,at);
-    } else if(drag.mode==='row') this.store.selectArea({row:drag.anchor.row,col:1},{row:at.row,col:COLS});
-    else this.store.selectArea({row:1,col:drag.anchor.col},{row:ROWS,col:at.col});
+    } else if(drag.mode==='row') this.store.selectArea({row:drag.anchor.row,col:1},{row:at.row,col:this.maxCols});
+    else this.store.selectArea({row:1,col:drag.anchor.col},{row:this.maxRows,col:at.col});
   }
   private pointerMove(e:PointerEvent) {
     if(this.resize?.id===e.pointerId){e.preventDefault();this.resize.width=Math.min(widthToPx(255),Math.max(35,this.resize.start+e.clientX-this.resize.x));this.rebuildWidths();this.schedule();return;}
@@ -218,7 +260,7 @@ export class Grid {
     const drag=this.drag;if(!drag)return;
     const rect=this.viewport.getBoundingClientRect(), right=rect.left+this.viewport.clientWidth,bottom=rect.top+this.viewport.clientHeight;
     const leftOffset=drag.x-rect.left, topOffset=drag.y-rect.top;
-    const row=topOffset<0 && this.frozenHeight && drag.y>=rect.top-this.frozenHeight ? 1 : Math.min(ROWS,this.baseRow+Math.floor((this.viewport.scrollTop+Math.max(0,Math.min(topOffset,this.viewport.clientHeight-1)))/ROW_H));
+    const row=topOffset<0 && this.frozenHeight && drag.y>=rect.top-this.frozenHeight ? 1 : Math.min(this.maxRows,this.baseRow+Math.floor((this.viewport.scrollTop+Math.max(0,Math.min(topOffset,this.viewport.clientHeight-1)))/ROW_H));
     const col=this.colAt(this.viewport.scrollLeft+Math.max(0,Math.min(leftOffset,this.viewport.clientWidth-1)));
     this.selectDrag({row,col});
     const dx=drag.mode==='row'?0:drag.x>right?18:drag.x<rect.left-SIDE? -18:0;
@@ -230,18 +272,41 @@ export class Grid {
     if(this.resize?.id===e.pointerId){const {col,start,width}=this.resize;this.resize=undefined;this.root.classList.remove('resizing');this.rebuildWidths();this.schedule();
       if(!cancelled && width!==start)this.store.dimensions({action:'set_width',column:col,width:pxToWidth(width)}).catch(this.actions.error);}
   }
-  reveal(p:Coord) {
-    const r=this.rangeFor(p), {scrollLeft:left,scrollTop:top,clientWidth:w,clientHeight:h}=this.viewport;
+  reveal(p:Coord, center = false) {
+    if (!this.explicitBounds && (p.row > this.maxRows || p.col > this.maxCols)) {
+      this.maxRows = Math.min(ROWS, Math.max(this.maxRows, p.row + 12));
+      this.maxCols = Math.min(COLS, Math.max(this.maxCols, p.col + 4));
+      this.rebuild();
+    }
+    const clamped = { row: Math.min(Math.max(p.row, 1), this.maxRows), col: Math.min(Math.max(p.col, 1), this.maxCols) };
+    const r=this.rangeFor(clamped), {scrollLeft:left,scrollTop:top,clientWidth:w,clientHeight:h}=this.viewport;
+    if (center) {
+      const targetLeft = Math.max(0, this.x(r.start.col) - Math.round(w / 3));
+      const maxLeft = Math.max(0, this.offsets[this.maxCols] - w);
+      this.viewport.scrollLeft = Math.min(maxLeft, targetLeft);
+      if (clamped.row >= this.baseRow) {
+        const targetTop = Math.max(0, this.y(clamped.row) - Math.round(h / 3));
+        const maxTop = Math.max(0, Math.max(1, this.maxRows - this.baseRow + 1) * ROW_H - h);
+        this.viewport.scrollTop = Math.min(maxTop, targetTop);
+      }
+      this.schedule();
+      return;
+    }
     if(this.x(r.start.col)<left)this.viewport.scrollLeft=this.x(r.start.col);
     else if(this.offsets[r.end.col]>left+w)this.viewport.scrollLeft=Math.max(this.x(r.start.col)-w/2,this.offsets[r.end.col]-w);
-    if(p.row<this.baseRow)return;
-    if(this.y(p.row)<top)this.viewport.scrollTop=this.y(p.row);
-    else if(this.y(p.row)+ROW_H>top+h)this.viewport.scrollTop=this.y(p.row)+ROW_H-h;
+    if(clamped.row<this.baseRow)return;
+    if(this.y(clamped.row)<top)this.viewport.scrollTop=this.y(clamped.row);
+    else if(this.y(clamped.row)+ROW_H>top+h)this.viewport.scrollTop=this.y(clamped.row)+ROW_H-h;
   }
   move(delta:{row:number;col:number},extend=false) {
     const p=extend ? this.store.selection.focus : this.store.active;
     const m=this.rangeFor(p);
     const dest={row:(delta.row>0?m.end.row:m.start.row)+delta.row,col:(delta.col>0?m.end.col:m.start.col)+delta.col};
+    if (!this.explicitBounds && (dest.row > this.maxRows || dest.col > this.maxCols)) {
+      this.maxRows = Math.min(ROWS, Math.max(this.maxRows, dest.row + 12));
+      this.maxCols = Math.min(COLS, Math.max(this.maxCols, dest.col + 4));
+      this.rebuild();
+    }
     this.store.locate(dest,extend);this.reveal(this.store.selection.focus);
   }
   private key(e:KeyboardEvent) {
@@ -258,7 +323,7 @@ export class Grid {
       this.store.locate(p,e.shiftKey);this.reveal(p);
     } else if(e.key==='F2'){e.preventDefault();this.actions.start(this.store.active);}
     else if(!this.readOnly && (e.key==='Delete'||e.key==='Backspace')){e.preventDefault();this.store.clear().catch(this.actions.error);}
-    else if(cmd && e.key.toLowerCase()==='a'){e.preventDefault();this.store.selectArea({row:1,col:1},{row:ROWS,col:COLS});}
+    else if(cmd && e.key.toLowerCase()==='a'){e.preventDefault();this.store.selectArea({row:1,col:1},{row:this.maxRows,col:this.maxCols});}
     else if(!cmd && !e.altKey && e.key.length===1){e.preventDefault();this.actions.start(this.store.active,e.key);}
   }
   openEditor(at:Coord,value:string,select=false) {

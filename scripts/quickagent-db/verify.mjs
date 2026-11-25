@@ -9,7 +9,7 @@ assert.ok(process.argv[2],'usage: node verify.mjs <bundle directory>');
 const dest=await realpath(resolve(process.argv[2]));
 const bundle=JSON.parse(await readFile(join(dest,'plugin.json'),'utf8'));
 assert.deepEqual(bundle,manifest);
-assert.equal(bundle.command_tools.length,8);
+assert.equal(bundle.command_tools.length,9);
 const keys=new Set(['name','description','input_schema','output_schema','program','args','timeout_seconds']);
 for(const t of bundle.command_tools){assert.ok(Object.keys(t).every(k=>keys.has(k)),t.name);assert.ok(t.timeout_seconds>=1&&t.timeout_seconds<=600);assert.deepEqual(t.args,['--tool',t.name]);}
 await access(join(dest,bundle.skill),constants.R_OK);
@@ -40,5 +40,6 @@ try {
   const handle=await snapshot.json();assert.deepEqual((await call('query',{...handle,sql:'SELECT qty FROM products ORDER BY id'})).rows,[[5],[9]]);
   const denied=await fetch(backend.origin+'/api/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...handle,sql:'DELETE FROM products'})});assert.equal(denied.status,400);assert.match((await denied.json()).error,/read_only/);
   assert.equal((await call('connections/'+saved.connection.id,undefined,'DELETE')).deleted,saved.connection.id);
-  console.log('DB bundle verified: 8 strict tools, '+assets.length+' offline assets, HTTP health + attachment, stdio SQLite → XLSX → SQLite, db-server '+(await stat(binary)).size+' bytes');
+  const focused=rpc(binary,f,'focus_view',{table:'products',column:'name'});assert.equal(focused.focused,true);assert.equal(focused.column,'name');
+  console.log('DB bundle verified: 9 strict tools, '+assets.length+' offline assets, HTTP health + attachment, stdio SQLite → XLSX → SQLite, db-server '+(await stat(binary)).size+' bytes');
 }finally{await backend?.stop();await f.clean();}

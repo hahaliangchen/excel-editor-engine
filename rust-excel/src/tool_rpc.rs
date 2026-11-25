@@ -22,7 +22,7 @@ use std::{
 const MAX_IN: u64 = 1024 * 1024 + 1;
 const MAX_OUT: usize = 200 * 1024;
 const PAGE_BUDGET: usize = MAX_OUT - 2048;
-const NAMES: [&str; 8] = [
+const NAMES: [&str; 9] = [
     "excel__inspect",
     "excel__read_range",
     "excel__write_cells",
@@ -31,6 +31,7 @@ const NAMES: [&str; 8] = [
     "excel__format_range",
     "excel__search",
     "excel__create_xlsx",
+    "excel__focus_view",
 ];
 
 struct Workspace {
@@ -260,6 +261,26 @@ fn prefix(s: &str, max: usize) -> &str {
 }
 fn call(name: &str, root: &str, mut args: Value) -> Result<Value> {
     ensure!(args.is_object(), "arguments must be an object");
+    if name == "excel__focus_view" {
+        let obj = args.as_object().unwrap();
+        let has_selector = ["sheet", "range", "column", "row", "find_value"]
+            .iter()
+            .any(|k| obj.get(*k).is_some_and(|v| !v.is_null()));
+        ensure!(
+            has_selector,
+            "excel__focus_view requires at least one of sheet, range, column, row, or find_value"
+        );
+        return Ok(json!({
+            "focused": true,
+            "path": obj.get("path").cloned().unwrap_or(Value::Null),
+            "sheet": obj.get("sheet").cloned().unwrap_or(Value::Null),
+            "range": obj.get("range").cloned().unwrap_or(Value::Null),
+            "column": obj.get("column").cloned().unwrap_or(Value::Null),
+            "row": obj.get("row").cloned().unwrap_or(Value::Null),
+            "find_column": obj.get("find_column").cloned().unwrap_or(Value::Null),
+            "find_value": obj.get("find_value").cloned().unwrap_or(Value::Null),
+        }));
+    }
     let path = args
         .as_object_mut()
         .and_then(|args| args.remove("path"))

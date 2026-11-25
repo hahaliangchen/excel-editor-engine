@@ -139,12 +139,14 @@ function renderTree(){
   }
 }
 function tableRow(s:Source,schema:string,t:Table){const row=el('div','db-table-row');const b=btn(t.name,t.kind==='view'?'panel-top':'table-2');b.classList.add('db-tree-name');bind(b,()=>openTable(s,schema,t,false));const info=btn('查看 '+t.name+' 结构','ellipsis',false);info.classList.add('db-tree-aux');bind(info,()=>openTable(s,schema,t,true));row.oncontextmenu=e=>{e.preventDefault();void task(()=>openTable(s,schema,t,true));};row.append(b,info);return row;}
-async function loadSources(){
+async function loadSources(silent=false){
   const r=await api.list(),old=new Map(store.sources.map(s=>[s.key,s]));
   const fresh=[...r.connections.map(c=>sourceOf(c,old.get('conn:'+c.id))),...r.workspace_sqlite.map(x=>local(x.path,old.get('file:'+x.path)))];
   for(const s of old.values())if(s.key.startsWith('attachment:')||s.key.startsWith('file:')&&!fresh.some(x=>x.key===s.key))fresh.push(s);
+  const sig=(list:Source[])=>list.map(s=>`${s.key}|${s.name}|${s.connection?.env??''}|${s.connection?.read_only??''}`).join('\n');
+  if(silent&&sig(fresh)===sig(store.sources))return;
   store.sources=fresh;for(const t of store.tabs)if(t.source)t.source=fresh.find(s=>s.key===t.source?.key);
-  if(store.selected)store.selected=fresh.find(s=>s.key===store.selected?.key);renderTree();renderSession();status('就绪');
+  if(store.selected)store.selected=fresh.find(s=>s.key===store.selected?.key);renderTree();renderSession();if(!silent)status('就绪');
 }
 async function openSource(s:Source,toggle=false){
   store.selected=s;const t=store.tab;
@@ -288,11 +290,121 @@ function quietRefreshSources(){
   const now=Date.now();
   if(now-lastQuietRefresh<2500)return;
   lastQuietRefresh=now;
-  void loadSources().catch(()=>{});
+  void loadSources(true).catch(()=>{});
 }
 addEventListener('focus',quietRefreshSources);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')quietRefreshSources();});
-addEventListener('message',e=>{if(parent===window||e.source!==parent||e.origin!==location.origin)return;if(e.data?.type==='quickagent:theme')setTheme(e.data.theme);if(e.data?.type==='quickagent:refresh-sources')quietRefreshSources();if(['quickagent:open-file','quickagent:reload-file'].includes(e.data?.type)&&typeof e.data.file==='string')void safeOpen(e.data.file,e.data.name);});
+if(params.get('mode')!=='preview')setInterval(()=>{if(document.visibilityState==='visible'&&!dbQueue)quietRefreshSources();},4000);
+interface AiDbSyncPayload{action:'save_connection'|'inspect'|'query'|'explain'|'execute'|'focus_view';connectionId?:string;sqlitePath?:string;schema?:string;table?:string;sql?:string;column?:string;row?:number;range?:string;findColumn?:string;findValue?:string;}
+function extractSqlTable(sql:string):{schema?:string;table:string}|undefined{
+  const match=sql.match(/\bFROM\s+(?:[`"']?([\w-]+)[`"']?\.)?[`"']?([\w-]+)[`"']?/i);
+  if(!match||!match[2])return undefined;
+  const schema=match[1],table=match[2];
+  const lowerSchema=(schema??'').toLowerCase(),lowerTable=table.toLowerCase();
+  if(lowerSchema==='information_schema'||lowerSchema==='performance_schema'||lowerSchema==='pg_catalog'||lowerTable==='sqlite_master'||lowerTable==='dual')return undefined;
+  return schema?{schema,table}:{table};
+}
+let aiSyncChain:Promise<void>=Promise.resolve();
+async function resolveSyncSource(detail:AiDbSyncPayload):Promise<Source|undefined>{
+  const find=():Source|undefined=>{
+    if(detail.connectionId)return store.sources.find(s=>s.key==='conn:'+detail.connectionId);
+    if(detail.sqlitePath)return store.sources.find(s=>s.key==='file:'+detail.sqlitePath);
+    return store.tab.source??store.selected;
+  };
+  let found=find();
+  if(!found||detail.action==='save_connection'){
+    await loadSources(true);
+    found=find();
+  }
+  return found;
+}
+function enqueueAiDbSync(detail:AiDbSyncPayload){
+  if(params.get('mode')==='preview')return;
+  aiSyncChain=aiSyncChain.then(async()=>{
+    await boot;
+    const src=await resolveSyncSource(detail);
+    if(!src)return;
+    if(detail.action==='save_connection'){
+      await openSource(src,false);
+      status(`已同步 AI 连接 · ${src.name}`);
+      return;
+    }
+    if(detail.action==='inspect'){
+      await openSource(src,false);
+      const schema=detail.schema??src.schema;
+      if(schema){
+        await openSchema(src,schema,false);
+        if(detail.table){
+          const found=src.tables.get(schema)?.find(t=>t.name===detail.table)??{name:detail.table,kind:'table'};
+          await openTable(src,schema,found,true);
+          status(`已同步 AI 表结构 · ${detail.table}`);
+        }
+      }
+      return;
+    }
+    if(detail.action==='query'){
+      await openSource(src,false);
+      const sql=(detail.sql??'').trim();
+      const parsed=sql?extractSqlTable(sql):undefined;
+      const schema=detail.schema??parsed?.schema??src.schema;
+      const table=detail.table??parsed?.table;
+      if(!table&&(!sql||!/\bFROM\b/i.test(sql)))return;
+      if(schema&&table){
+        await openSchema(src,schema,false);
+        const existing=store.tabs.find(t=>t.source?.key===src.key&&t.schema===schema&&t.table===table);
+        const tab=existing??store.open({label:table,source:src,schema,table,sql:sql||('SELECT * FROM '+quote(src.connection?.driver??'sqlite',schema)+'.'+quote(src.connection?.driver??'sqlite',table)),view:'data'});
+        store.active=tab.id;tab.view='data';if(sql)tab.sql=sql;
+        renderTab();await run(tab,0,tab.sql);
+        status(`已同步 AI 打开表 · ${table}`);
+      }else if(sql){
+        const reuse=!store.tab.executed&&!store.tab.table&&!store.tab.patches.size;
+        const tab=reuse?store.tab:store.open({label:table??'AI 查询',source:src,sql,view:'data'});
+        tab.source=src;tab.sql=sql;tab.view='data';store.active=tab.id;
+        renderTab();await run(tab,0,sql);
+        status('已同步 AI 查询视图');
+      }
+      return;
+    }
+    if(detail.action==='explain'&&detail.sql){
+      await openSource(src,false);
+      const reuse=!store.tab.executed&&!store.tab.table&&!store.tab.patches.size;
+      const tab=reuse?store.tab:store.open({label:'执行计划',source:src,sql:detail.sql,view:'plan'});
+      tab.source=src;tab.sql=detail.sql;tab.plan=await api.explain(src.target,detail.sql);tab.view='plan';store.active=tab.id;
+      renderTab();status('已同步 AI 执行计划');
+      return;
+    }
+    if(detail.action==='execute'){
+      src.tables.clear();
+      if(src.schema)await openSchema(src,src.schema,false);
+      const t=store.tab;
+      if(t.source?.key===src.key&&t.executed&&!t.patches.size)await run(t,t.page?.offset??0,t.executed);
+      status('已同步 AI 写入变更');
+      return;
+    }
+    if(detail.action==='focus_view'){
+      const targetTable=detail.table?.trim();
+      if(targetTable){
+        await openSource(src,false);
+        const schema=detail.schema??src.schema;
+        if(schema){
+          await openSchema(src,schema,false);
+          const existing=store.tabs.find(t=>t.source?.key===src.key&&t.table?.toLowerCase()===targetTable.toLowerCase());
+          if(existing){
+            store.active=existing.id;existing.view='data';renderTab();
+            if(!existing.page&&existing.sql)await run(existing,0,existing.sql);
+          }else{
+            const found=src.tables.get(schema)?.find(t=>t.name.toLowerCase()===targetTable.toLowerCase())??{name:targetTable,kind:'table'};
+            await openTable(src,schema,found,false);
+          }
+        }
+      }
+      if(store.tab.view!=='data'){store.tab.view='data';renderResult(false);}
+      const picked=grid.selectTarget({column:detail.column,row:detail.row,range:detail.range,findColumn:detail.findColumn,findValue:detail.findValue});
+      if(picked)status(`已定位到 ${picked}`);
+    }
+  }).catch(()=>{});
+}
+addEventListener('message',e=>{if(parent===window||e.source!==parent||e.origin!==location.origin)return;if(e.data?.type==='quickagent:theme')setTheme(e.data.theme);if(e.data?.type==='quickagent:refresh-sources')quietRefreshSources();if(e.data?.type==='quickagent:db-sync'&&e.data.detail&&typeof e.data.detail==='object')enqueueAiDbSync(e.data.detail as AiDbSyncPayload);if(['quickagent:open-file','quickagent:reload-file'].includes(e.data?.type)&&typeof e.data.file==='string')void safeOpen(e.data.file,e.data.name);});
 if(embed&&parent!==window){const root=parent.document.documentElement;new MutationObserver(()=>setTheme(root.hasAttribute('data-ds-dark-theme')?'dark':'light')).observe(root,{attributes:true,attributeFilter:['data-ds-dark-theme']});}
 let contextTimer:number|undefined;
 function buildStudioContext(){
