@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/excel-studio"
+    "packages/excel-studio",
+    "packages/db-studio"
   ],
   "scripts": {
     "dev": "npm run dev --workspace excel-studio",
@@ -12,7 +13,9 @@
     "typecheck": "npm run typecheck --workspace excel-studio",
     "test": "npm run test --workspace excel-studio",
     "backend": "cargo run --locked --manifest-path rust-excel/Cargo.toml --bin excel-server",
-    "test:browser": "node scripts/browser-smoke.mjs"
+    "test:browser": "node scripts/browser-smoke.mjs",
+    "backend:db": "cargo run --locked --manifest-path rust-db/Cargo.toml --bin db-server",
+    "preview:db": "npm run preview --workspace db-studio"
   },
   "devDependencies": {
     "playwright": "^1.55.0"

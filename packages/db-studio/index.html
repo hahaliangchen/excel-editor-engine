@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark"><title>数据库工作台</title><link rel="icon" href="./db.svg" type="image/svg+xml">
+<script>
+(()=>{const q=new URLSearchParams(location.search),r=document.documentElement;let t=q.get('theme');if(t!=='light'&&t!=='dark'){try{const p=parent.document.documentElement;if(p.hasAttribute('data-ds-dark-theme'))t='dark';}catch{}t=t||localStorage.getItem('db-studio-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');}r.dataset.theme=t==='dark'?'dark':'light';})();
+</script></head><body><div id="app"></div><script type="module" src="/src/main.ts"></script></body></html>
