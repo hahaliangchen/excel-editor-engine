@@ -26,6 +26,14 @@ class Adapter extends WorkbookStore {
   override async paste(raw:string){const start=this.active;const changes=decodeTsv(raw).flatMap((row,r)=>row.map((v,c)=>({p:{row:start.row+r,col:start.col+c},raw:v})));this.source.changes(changes);}
   override async clear(){const {start,end}=this.range;const changes=[];for(let r=start.row;r<=end.row;r++)for(let c=start.col;c<=end.col;c++)changes.push({p:{row:r,col:c},raw:'NULL'});this.source.changes(changes);}
 }
+export interface CellInspectInfo {
+  readonly column: string;
+  readonly rowNumber: number;
+  readonly value: string;
+  readonly isNull: boolean;
+  readonly editable: boolean;
+  readonly onEdit?: () => void;
+}
 export class ResultGrid {
   widths:Record<number,number>={};
   private tab?:Tab;
@@ -33,12 +41,13 @@ export class ResultGrid {
   private filter='';
   private sort?:{i:number;desc:boolean};
   private draft?:{p:Coord;raw:string};
+  private clickTimer?:number;
   private readonly model:Adapter;
   readonly engine:Grid;
   readonly root:HTMLElement;
-  constructor(private readonly changed:()=>void,private readonly viewer:(title:string,value:string)=>void,private readonly error:(error:unknown)=>void,private readonly onSelect?:()=>void){
+  constructor(private readonly changed:()=>void,private readonly viewer:(info:CellInspectInfo)=>void,private readonly error:(error:unknown)=>void,private readonly onSelect?:()=>void){
     this.model=new Adapter(this);
-    this.engine=new Grid(this.model,{start:(p,raw)=>this.start(p,raw),draft:raw=>{if(this.draft)this.draft.raw=raw;},commit:move=>this.commit(move),cancel:()=>this.cancel(),error});
+    this.engine=new Grid(this.model,{start:(p,raw)=>this.start(p,raw),draft:raw=>{if(this.draft)this.draft.raw=raw;},commit:move=>this.commit(move),cancel:()=>this.cancel(),error,clickCell:p=>this.scheduleInspect(p)});
     this.root=this.engine.root;
     this.root.setAttribute('aria-label','查询结果');
     this.root.addEventListener('pointerdown',e=>{
@@ -176,15 +185,46 @@ export class ResultGrid {
     this.model.locate(old);grid.scrollTo(left,top);
     this.root.setAttribute('aria-rowcount',String(this.model.rows));this.root.setAttribute('aria-colcount',String(this.model.cols));
   }
-  private start(p:Coord,raw?:string){
+  private clearPendingInspect(){if(this.clickTimer!==undefined){window.clearTimeout(this.clickTimer);this.clickTimer=undefined;}}
+  private buildInspectInfo(p:Coord):CellInspectInfo|undefined{
+    if(p.row<2)return undefined;
     const r=this.visible[p.row-2];const column=this.tab?.page?.columns[p.col-1];
-    if(r===undefined||!column)return;
+    if(r===undefined||!column)return undefined;
     const v=this.value(r,p.col-1);
-    if(raw===undefined&&(typeof v==='object'&&v!==null||text(v).length>140)){this.viewer(column.name,text(v));return;}
-    if(!this.tab?.page?.editable_table?.columns.includes(column.name))return;
-    this.draft={p,raw:raw??text(v)};this.engine.openEditor(p,this.draft.raw,raw===undefined);
+    const editable=!!this.tab?.page?.editable_table?.columns.includes(column.name);
+    const raw=text(v);
+    return {
+      column:column.name,
+      rowNumber:(this.tab?.page?.offset??0)+r+1,
+      value:raw,
+      isNull:v===null,
+      editable,
+      onEdit:editable?()=>{this.draft={p,raw};this.engine.openEditor(p,raw,true);}:undefined,
+    };
   }
-  private cancel(){this.draft=undefined;this.engine.closeEditor();}
+  private scheduleInspect(p:Coord){
+    this.clearPendingInspect();
+    const info=this.buildInspectInfo(p);
+    if(!info)return;
+    // Read-only cells open immediately on click; editable cells wait briefly so
+    // double-click inline editing stays seamless.
+    if(!info.editable){this.viewer(info);return;}
+    this.clickTimer=window.setTimeout(()=>{
+      this.clickTimer=undefined;
+      if(!this.draft)this.viewer(info);
+    },230);
+  }
+  private start(p:Coord,raw?:string){
+    this.clearPendingInspect();
+    const info=this.buildInspectInfo(p);
+    if(!info)return;
+    const r=this.visible[p.row-2];
+    const v=this.value(r,p.col-1);
+    if(raw===undefined&&(typeof v==='object'&&v!==null||info.value.length>140)){this.viewer(info);return;}
+    if(!info.editable)return;
+    this.draft={p,raw:raw??info.value};this.engine.openEditor(p,this.draft.raw,raw===undefined);
+  }
+  private cancel(){this.clearPendingInspect();this.draft=undefined;this.engine.closeEditor();}
   private commit(move?:Coord){const d=this.draft;if(!d)return;this.cancel();try{this.changes([d]);if(move)this.model.locate({row:d.p.row+move.row,col:d.p.col+move.col});}catch(e){this.error(e);}}
   changes(changes:{p:Coord;raw:string}[]){
     const t=this.tab,p=t?.page,e=p?.editable_table;

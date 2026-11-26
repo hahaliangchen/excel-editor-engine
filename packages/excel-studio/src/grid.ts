@@ -14,6 +14,7 @@ export interface GridActions {
   commit(move?: {row: number; col: number}): void;
   cancel(): void;
   error(error: unknown): void;
+  clickCell?(coord: Coord): void;
 }
 
 export class Grid {
@@ -34,8 +35,9 @@ export class Grid {
   private merges: Range[] = [];
   private frame = 0;
   private dragFrame = 0;
-  private drag?: {mode: 'cell'|'row'|'col'; anchor: Coord; id: number; x:number;y:number};
-  private resize?: {col:number; x:number; start:number; width:number; id:number};
+  private resizeFrame = 0;
+  private drag?: {mode: 'cell'|'row'|'col'; anchor: Coord; id: number; x:number; y:number; startX:number; startY:number; moved:boolean; shift:boolean};
+  private resize?: {col:number; startContentX:number; start:number; width:number; clientX:number; id:number};
   private editorAt?: Coord;
   private lastTap?: {coord:Coord;time:number};
   private readonly scrolls = new Map<number,{left:number;top:number}>();
@@ -136,7 +138,15 @@ export class Grid {
     }
     this.offsets[0] = 0;
     for(let c=1;c<=this.maxCols;c++) this.offsets[c]=this.offsets[c-1]+(this.resize?.col===c ? this.resize.width : widths[c]!==undefined ? widthToPx(widths[c]) : DEFAULT_WIDTH);
-    this.spacer.style.width=this.offsets[this.maxCols]+'px';
+    const totalWidth = this.offsets[this.maxCols];
+    const viewW = this.viewport.clientWidth;
+    // When dragging a column handle near or past the right edge of the viewport,
+    // extend the scroll spacer ahead of the edge so the horizontal scrollbar appears
+    // immediately and edge auto-scroll has room to expand the column smoothly.
+    const spacerWidth = this.resize && viewW > 0 && totalWidth >= Math.max(80, viewW - 64)
+      ? Math.max(totalWidth + 96, viewW + 120)
+      : totalWidth;
+    this.spacer.style.width = spacerWidth + 'px';
   }
   private schedule() {if (!this.frame) this.frame=requestAnimationFrame(()=>{this.frame=0;this.render();});}
   private x(col: number) {return this.offsets[Math.min(col,this.maxCols)-1];}
@@ -158,7 +168,18 @@ export class Grid {
     block.dataset.row=String(p.row);block.dataset.col=String(p.col);block.dataset.address=a;
     block.setAttribute('role','gridcell');block.setAttribute('aria-rowindex',String(p.row));block.setAttribute('aria-colindex',String(p.col));
     if (!sameCoord(range.start,range.end)){block.classList.add('merged');block.setAttribute('aria-colspan',String(range.end.col-range.start.col+1));block.setAttribute('aria-rowspan',String(range.end.row-range.start.row+1));}
-    if (overlaps(range, selected)) {block.classList.add('selected');block.setAttribute('aria-selected','true');}
+    const multiSelected = !sameCoord(selected.start, selected.end);
+    if (overlaps(range, selected)) {
+      block.classList.add('selected');
+      block.setAttribute('aria-selected','true');
+      if (multiSelected) {
+        block.classList.add('sel-multi');
+        if (range.start.row === selected.start.row) block.classList.add('sel-top');
+        if (range.end.row === selected.end.row && (!frozen || selected.end.row === 1)) block.classList.add('sel-bottom');
+        if (range.start.col === selected.start.col) block.classList.add('sel-left');
+        if (range.end.col === selected.end.col) block.classList.add('sel-right');
+      }
+    }
     if (sameCoord(this.store.active,p)) block.classList.add('active');
     if (cell) {
       if (cell.style.bold) block.classList.add('bold');if(cell.style.italic)block.classList.add('italic');
@@ -231,7 +252,24 @@ export class Grid {
   private pointerDown(e:PointerEvent) {
     if (e.button!==0 || e.target===this.input || !(e.target instanceof Element))return;
     const col=Number(e.target.closest<HTMLElement>('[data-resize]')?.dataset.resize);
-    if(col && !this.readOnly){e.preventDefault();this.actions.commit();this.resize={col,x:e.clientX,start:this.offsets[col]-this.x(col),width:this.offsets[col]-this.x(col),id:e.pointerId};this.root.classList.add('resizing');return;}
+    if(col && !this.readOnly){
+      e.preventDefault();
+      this.actions.commit();
+      const rect = this.viewport.getBoundingClientRect();
+      const colW = this.offsets[col] - this.x(col);
+      this.resize = {
+        col,
+        startContentX: e.clientX - rect.left + this.viewport.scrollLeft,
+        start: colW,
+        width: colW,
+        clientX: e.clientX,
+        id: e.pointerId,
+      };
+      try { this.root.setPointerCapture(e.pointerId); } catch {}
+      this.root.classList.add('resizing');
+      this.rebuildWidths();
+      return;
+    }
     const p=this.coordinateTarget(e.target);if(!p)return;
     e.preventDefault();this.actions.commit();this.focus();
     const at=this.rangeFor(p.at).start;
@@ -240,7 +278,8 @@ export class Grid {
     }
     this.lastTap=p.mode==='cell' ? {coord:at,time:performance.now()} : undefined;
     const anchor=e.shiftKey?this.store.active:p.at;
-    this.drag={mode:p.mode,anchor,id:e.pointerId,x:e.clientX,y:e.clientY};this.selectDrag(p.at);
+    this.drag={mode:p.mode,anchor,id:e.pointerId,x:e.clientX,y:e.clientY,startX:e.clientX,startY:e.clientY,moved:false,shift:e.shiftKey};
+    this.selectDrag(p.at);
   }
   private selectDrag(at:Coord) {
     const drag=this.drag;if(!drag)return;
@@ -250,10 +289,40 @@ export class Grid {
     } else if(drag.mode==='row') this.store.selectArea({row:drag.anchor.row,col:1},{row:at.row,col:this.maxCols});
     else this.store.selectArea({row:1,col:drag.anchor.col},{row:this.maxRows,col:at.col});
   }
+  private updateResize() {
+    const r = this.resize;
+    if (!r) return;
+    const rect = this.viewport.getBoundingClientRect();
+    const contentX = r.clientX - rect.left + this.viewport.scrollLeft;
+    const maxW = widthToPx(400);
+    r.width = Math.min(maxW, Math.max(35, Math.round(r.start + contentX - r.startContentX)));
+    this.rebuildWidths();
+    this.schedule();
+    const rightThreshold = rect.left + this.viewport.clientWidth - 32;
+    const leftThreshold = rect.left + 20;
+    let dx = 0;
+    if (r.clientX >= rightThreshold && r.width < maxW) {
+      dx = Math.min(28, Math.max(6, Math.round((r.clientX - rightThreshold) * 0.45 + 6)));
+    } else if (r.clientX <= leftThreshold && this.viewport.scrollLeft > 0) {
+      dx = -Math.min(28, Math.max(6, Math.round((leftThreshold - r.clientX) * 0.45 + 6)));
+    }
+    if (dx !== 0 && !this.resizeFrame) {
+      this.resizeFrame = requestAnimationFrame(() => {
+        this.resizeFrame = 0;
+        if (!this.resize) return;
+        this.viewport.scrollLeft = Math.max(0, this.viewport.scrollLeft + dx);
+        this.updateResize();
+      });
+    } else if (dx === 0 && this.resizeFrame) {
+      cancelAnimationFrame(this.resizeFrame);
+      this.resizeFrame = 0;
+    }
+  }
   private pointerMove(e:PointerEvent) {
-    if(this.resize?.id===e.pointerId){e.preventDefault();this.resize.width=Math.min(widthToPx(255),Math.max(35,this.resize.start+e.clientX-this.resize.x));this.rebuildWidths();this.schedule();return;}
+    if(this.resize?.id===e.pointerId){e.preventDefault();this.resize.clientX=e.clientX;this.updateResize();return;}
     if(this.drag?.id!==e.pointerId)return;
-    e.preventDefault();if(Math.hypot(this.drag.x-e.clientX,this.drag.y-e.clientY)>3)this.lastTap=undefined;
+    e.preventDefault();
+    if(Math.hypot(this.drag.startX-e.clientX,this.drag.startY-e.clientY)>4){this.drag.moved=true;this.lastTap=undefined;}
     this.drag.x=e.clientX;this.drag.y=e.clientY;this.dragPosition();
   }
   private dragPosition() {
@@ -268,9 +337,28 @@ export class Grid {
     if((dx||dy) && !this.dragFrame) this.dragFrame=requestAnimationFrame(()=>{this.dragFrame=0;this.viewport.scrollBy(dx,dy);this.dragPosition();});
   }
   private endPointer(e:PointerEvent,cancelled=false) {
-    if(this.drag?.id===e.pointerId){this.drag=undefined;cancelAnimationFrame(this.dragFrame);this.dragFrame=0;}
-    if(this.resize?.id===e.pointerId){const {col,start,width}=this.resize;this.resize=undefined;this.root.classList.remove('resizing');this.rebuildWidths();this.schedule();
-      if(!cancelled && width!==start)this.store.dimensions({action:'set_width',column:col,width:pxToWidth(width)}).catch(this.actions.error);}
+    if(this.drag?.id===e.pointerId){
+      const finished = this.drag;
+      this.drag=undefined;cancelAnimationFrame(this.dragFrame);this.dragFrame=0;
+      if(
+        !cancelled
+        && finished.mode==='cell'
+        && !finished.moved
+        && !finished.shift
+        && !this.editorAt
+        && sameCoord(this.store.range.start,this.store.range.end)
+      ){
+        this.actions.clickCell?.(this.rangeFor(finished.anchor).start);
+      }
+    }
+    if(this.resize?.id===e.pointerId){
+      const {col,start,width,id}=this.resize;
+      this.resize=undefined;
+      cancelAnimationFrame(this.resizeFrame);this.resizeFrame=0;
+      try { if (this.root.hasPointerCapture(id)) this.root.releasePointerCapture(id); } catch {}
+      this.root.classList.remove('resizing');this.rebuildWidths();this.schedule();
+      if(!cancelled && width!==start)this.store.dimensions({action:'set_width',column:col,width:pxToWidth(width)}).catch(this.actions.error);
+    }
   }
   reveal(p:Coord, center = false) {
     if (!this.explicitBounds && (p.row > this.maxRows || p.col > this.maxCols)) {

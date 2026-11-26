@@ -235,12 +235,12 @@ impl Service {
         if action == "focus_view" {
             ensure!(input.is_object(), "arguments must be an object");
             let obj = input.as_object().unwrap();
-            let has_selector = ["table", "column", "row", "range", "find_value"]
+            let has_selector = ["table", "column", "row", "range", "find_value", "offset"]
                 .iter()
                 .any(|k| obj.get(*k).is_some_and(|v| !v.is_null()));
             ensure!(
                 has_selector,
-                "focus_view requires at least one of table, column, row, range, or find_value"
+                "focus_view requires at least one of table, column, row, range, find_value, or offset"
             );
             return Ok(Output::Json(json!({
                 "focused": true,
@@ -250,6 +250,7 @@ impl Service {
                 "table": obj.get("table").cloned().unwrap_or(Value::Null),
                 "column": obj.get("column").cloned().unwrap_or(Value::Null),
                 "row": obj.get("row").cloned().unwrap_or(Value::Null),
+                "offset": obj.get("offset").cloned().unwrap_or(Value::Null),
                 "range": obj.get("range").cloned().unwrap_or(Value::Null),
                 "find_column": obj.get("find_column").cloned().unwrap_or(Value::Null),
                 "find_value": obj.get("find_value").cloned().unwrap_or(Value::Null),

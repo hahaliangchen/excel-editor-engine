@@ -5,7 +5,7 @@
   --surface: #fff; --chrome: #f8faf9; --strip: #f2f5f3; --canvas: #fff;
   --ink: #172720; --muted: #53635c; --dim: #64736c; --line: #dce4df; --cell-line: #e5ebe7;
   --accent: #147852; --accent-strong: #0e6240; --on-accent: #fff; --tint: #e1f1e8;
-  --hover: #eaf0ec; --selection: #e8f5ed; --select-overlay: #42a37438; --focus: #168457;
+  --hover: #eaf0ec; --selection: #d2f0e0; --select-overlay: #2eb87240; --focus: #168457;
   --axis-bg: #f4f6f5; --axis-active: #d7ede0; --axis-ink: #4c6056; --axis-active-ink: #115f40;
   --dialog-shadow: 0 8px 30px #162b2024; --error: #a13b27; --overlay: #ffffffd9;
 }
@@ -14,7 +14,7 @@
   --surface: #181e1b; --chrome: #1b231f; --strip: #222c27; --canvas: #171e1a;
   --ink: #e4eee8; --muted: #aebdb4; --dim: #a0b1a7; --line: #35433a; --cell-line: #2d3831;
   --accent: #4ac590; --accent-strong: #77d8ad; --on-accent: #09271a; --tint: #253f32;
-  --hover: #29372e; --selection: #233b2f; --select-overlay: #43cf9350; --focus: #63d4a0;
+  --hover: #29372e; --selection: #1f4835; --select-overlay: #43cf9358; --focus: #63d4a0;
   --axis-bg: #202a24; --axis-active: #284937; --axis-ink: #a7b9af; --axis-active-ink: #a4ebc4;
   --dialog-shadow: 0 8px 30px #0008; --error: #eead9e; --overlay: #141e19e6;
 }
@@ -89,7 +89,11 @@ button:focus-visible, summary:focus-visible, select:focus-visible, input:focus-v
 .formula-action { width: 29px; height: 27px; padding: 0; color: var(--accent-strong); }
 .sheet-body { position: relative; min-width: 0; min-height: 0; background: var(--canvas); }
 .grid { --frozen: 0px; position: absolute; inset: 0; overflow: hidden; font-size: 13px; user-select: none; }
-.grid-viewport { position: absolute; inset: calc(28px + var(--frozen)) 0 0 49px; overflow: auto; overscroll-behavior: contain; outline: 0; scrollbar-color: color-mix(in srgb, var(--dim) 48%, transparent) var(--strip); }
+.grid-viewport { position: absolute; inset: calc(28px + var(--frozen)) 0 0 49px; overflow: auto; overscroll-behavior: contain; outline: 0; scrollbar-color: color-mix(in srgb, var(--dim) 55%, transparent) var(--strip); }
+.grid-viewport::-webkit-scrollbar { width: 10px; height: 10px; }
+.grid-viewport::-webkit-scrollbar-track { background: var(--strip); }
+.grid-viewport::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--dim) 45%, transparent); border-radius: 999px; border: 2px solid var(--strip); }
+.grid-viewport::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, var(--dim) 72%, transparent); }
 .grid-spacer { position: relative; background: var(--canvas); }
 .cell-plane { position: absolute; inset: 0; }
 .grid-cell { position: absolute; display: block; min-width: 0; line-height: 26px; border-right: 1px solid var(--cell-line); border-bottom: 1px solid var(--cell-line); padding: 0 8px; overflow: hidden; white-space: nowrap; color: var(--cell-ink, var(--ink)); background: var(--canvas); font-variant-numeric: tabular-nums; }
@@ -101,8 +105,20 @@ button:focus-visible, summary:focus-visible, select:focus-visible, input:focus-v
 .grid-cell.cell-error { color: var(--error); }
 .grid-cell.selected:not(.filled) { background: var(--selection); }
 .grid-cell.selected.filled::before { position: absolute; inset: 0; content: ''; background: var(--select-overlay); }
-.grid-cell.active { box-shadow: inset 0 0 0 2px var(--focus); z-index: 2; }
-.grid-cell.active::after { content: ''; position: absolute; right: 0; bottom: 0; width: 5px; height: 5px; background: var(--focus); }
+.grid-cell.sel-multi {
+  --st: 0 0 0 0 transparent;
+  --sb: 0 0 0 0 transparent;
+  --sl: 0 0 0 0 transparent;
+  --sr: 0 0 0 0 transparent;
+  box-shadow: var(--st), var(--sb), var(--sl), var(--sr);
+  z-index: 1;
+}
+.grid-cell.sel-top { --st: inset 0 2px 0 0 var(--focus); }
+.grid-cell.sel-bottom { --sb: inset 0 -2px 0 0 var(--focus); }
+.grid-cell.sel-left { --sl: inset 2px 0 0 0 var(--focus); }
+.grid-cell.sel-right { --sr: inset -2px 0 0 0 var(--focus); }
+.grid-cell.active:not(.sel-multi) { box-shadow: inset 0 0 0 2px var(--focus); z-index: 2; }
+.grid-cell.active:not(.sel-multi)::after { content: ''; position: absolute; right: 0; bottom: 0; width: 5px; height: 5px; background: var(--focus); }
 .axis { overflow: hidden; position: absolute; background: var(--axis-bg); color: var(--axis-ink); z-index: 4; }
 .column-heads { top: 0; height: 28px; left: 49px; right: 0; border-bottom: 1px solid var(--line); }
 .row-heads { left: 0; top: 28px; bottom: 0; width: 49px; border-right: 1px solid var(--line); }

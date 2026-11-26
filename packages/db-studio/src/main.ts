@@ -2,7 +2,7 @@ import '../../excel-studio/src/styles/studio.css';
 import './styles/studio.css';
 import {Client,embed,type Connection,type Detail,type Env,type ImportInput,type Kind,type ResultPage,type Table} from './api-client';
 import {base64,btn,download,el,field,heading,input,modal,select} from './components/controls';
-import {ResultGrid,text} from './grid';
+import {ResultGrid,text,type CellInspectInfo} from './grid';
 import {formatSql,mark,remember,savedHistory,suggestions} from './sql-editor';
 import {quote,Store,type Source,type Tab} from './store';
 
@@ -116,7 +116,78 @@ function renderPlan(p?:ResultPage){rich.replaceChildren();if(!p)return;
     if(parsed&&typeof parsed==='object'){const raw=el('details','db-detail-block');raw.append(el('summary','','原始计划'),el('pre','',JSON.stringify(parsed,null,2)));section.append(raw);}rich.append(section);
   }
 }
-function showText(title:string,value:string){const m=modal(title);m.body.append(el('pre','db-value',value));const copy=btn('复制','file-plus-2');bind(copy,async()=>{await navigator.clipboard.writeText(value);status('已复制');});m.foot.append(copy);m.open();}
+let activeCellDialog:HTMLDialogElement|undefined;
+function tryPrettyJson(raw:string):string|null{
+  const trimmed=raw.trim();
+  if(!trimmed||!(trimmed.startsWith('{')&&trimmed.endsWith('}')||trimmed.startsWith('[')&&trimmed.endsWith(']')))return null;
+  try{
+    const parsed=JSON.parse(trimmed);
+    if(parsed&&typeof parsed==='object')return JSON.stringify(parsed,null,2);
+  }catch{/* plain text */}
+  return null;
+}
+function showText(info:CellInspectInfo){
+  if(activeCellDialog?.open)activeCellDialog.close();
+  const m=modal(`${info.column} · 第 ${info.rowNumber} 行`);
+  m.dialog.classList.add('db-cell-dialog');
+  activeCellDialog=m.dialog;
+  m.dialog.addEventListener('close',()=>{if(activeCellDialog===m.dialog)activeCellDialog=undefined;},{once:true});
+  m.dialog.addEventListener('click',e=>{if(e.target===m.dialog)m.close();});
+
+  const pretty=info.isNull?null:tryPrettyJson(info.value);
+  let formatted=pretty!==null;
+  let wrapped=true;
+
+  const meta=el('div','db-cell-meta');
+  meta.append(
+    el('span','db-chip',`第 ${info.rowNumber} 行`),
+    el('span','db-chip',info.isNull?'NULL':pretty!==null?'JSON':'文本'),
+    el('span','db-chip',`${info.value.length.toLocaleString('zh-CN')} 字符`),
+  );
+  const pre=el('pre','db-value db-cell-content',formatted&&pretty!==null?pretty:info.value);
+  if(info.isNull)pre.classList.add('db-cell-null-val');
+
+  if(pretty!==null){
+    const toggleJson=btn('显示原始文本',undefined,true,'db-cell-toggle');
+    toggleJson.onclick=()=>{
+      formatted=!formatted;
+      pre.textContent=formatted?pretty:info.value;
+      toggleJson.textContent=formatted?'显示原始文本':'格式化 JSON';
+      toggleJson.title=toggleJson.textContent;
+      toggleJson.setAttribute('aria-label',toggleJson.textContent);
+    };
+    meta.append(toggleJson);
+  }
+  const toggleWrap=btn('取消换行',undefined,true,'db-cell-toggle');
+  toggleWrap.onclick=()=>{
+    wrapped=!wrapped;
+    pre.classList.toggle('db-nowrap',!wrapped);
+    toggleWrap.textContent=wrapped?'取消换行':'自动换行';
+    toggleWrap.title=toggleWrap.textContent;
+    toggleWrap.setAttribute('aria-label',toggleWrap.textContent);
+  };
+  meta.append(toggleWrap);
+
+  m.body.append(meta,pre);
+
+  if(info.editable&&info.onEdit){
+    const editBtn=btn('行内编辑','table-2');
+    editBtn.onclick=()=>{m.close();info.onEdit?.();};
+    m.foot.append(editBtn);
+  }
+  if(pretty!==null){
+    const copyRaw=btn('复制原文','file-plus-2');
+    bind(copyRaw,async()=>{await navigator.clipboard.writeText(info.value);status('已复制原文');});
+    const copyPretty=btn('复制格式化 JSON','check',true,'db-primary');
+    bind(copyPretty,async()=>{await navigator.clipboard.writeText(pretty);status('已复制格式化 JSON');});
+    m.foot.append(copyRaw,copyPretty);
+  }else{
+    const copy=btn('复制内容','file-plus-2',true,'db-primary');
+    bind(copy,async()=>{await navigator.clipboard.writeText(info.value);status('已复制');});
+    m.foot.append(copy);
+  }
+  m.open();
+}
 function renderTree(){
   const needle=filterTree.value.trim().toLocaleLowerCase();tree.replaceChildren();
   for(const [name,sources] of [['已保存连接',store.sources.filter(s=>s.connection)],['工作区 SQLite',store.sources.filter(s=>!s.connection)]] as const){
@@ -138,7 +209,20 @@ function renderTree(){
     tree.append(group);
   }
 }
-function tableRow(s:Source,schema:string,t:Table){const row=el('div','db-table-row');const b=btn(t.name,t.kind==='view'?'panel-top':'table-2');b.classList.add('db-tree-name');bind(b,()=>openTable(s,schema,t,false));const info=btn('查看 '+t.name+' 结构','ellipsis',false);info.classList.add('db-tree-aux');bind(info,()=>openTable(s,schema,t,true));row.oncontextmenu=e=>{e.preventDefault();void task(()=>openTable(s,schema,t,true));};row.append(b,info);return row;}
+function tableRow(s:Source,schema:string,t:Table){
+  const row=el('div','db-table-row');
+  const active=store.tab.source?.key===s.key&&store.tab.schema===schema&&store.tab.table===t.name;
+  row.classList.toggle('current',active);
+  const b=btn(t.name,t.kind==='view'?'panel-top':'table-2');b.classList.add('db-tree-name');bind(b,()=>openTable(s,schema,t,false));
+  const info=btn('查看 '+t.name+' 结构','ellipsis',false);info.classList.add('db-tree-aux');bind(info,()=>openTable(s,schema,t,true));
+  row.oncontextmenu=e=>{e.preventDefault();void task(()=>openTable(s,schema,t,true));};
+  row.append(b,info);return row;
+}
+function scrollActiveTableIntoView(){
+  requestAnimationFrame(()=>{
+    tree.querySelector<HTMLElement>('.db-table-row.current')?.scrollIntoView({block:'nearest',behavior:'smooth'});
+  });
+}
 async function loadSources(silent=false){
   const r=await api.list(),old=new Map(store.sources.map(s=>[s.key,s]));
   const fresh=[...r.connections.map(c=>sourceOf(c,old.get('conn:'+c.id))),...r.workspace_sqlite.map(x=>local(x.path,old.get('file:'+x.path)))];
@@ -158,7 +242,7 @@ async function openSource(s:Source,toggle=false){
 }
 async function openSchema(s:Source,schema:string,toggle:boolean){const k=s.key+'/'+schema;if(toggle&&expansions.has(k)){expansions.delete(k);renderTree();return;}expansions.add(k);if(!s.tables.has(schema))s.tables.set(schema,await api.tables(s.target,schema));renderTree();}
 async function openTable(s:Source,schema:string,table:Table,structure:boolean){
-  const existing=store.tabs.find(t=>t.source?.key===s.key&&t.schema===schema&&t.table===table.name);
+  const existing=store.tabs.find(t=>t.label!=='AI 查询'&&t.source?.key===s.key&&t.schema===schema&&t.table===table.name);
   if(existing){store.active=existing.id;existing.view=structure?'structure':'data';renderTab();if(structure&&!existing.detail)await detail(existing);else if(!structure&&!existing.page)await run(existing,0,existing.sql);return;}
   const q=(n:string)=>quote(s.connection?.driver??'sqlite',n),t=store.open({label:table.name,source:s,schema,table:table.name,sql:'SELECT * FROM '+q(schema)+'.'+q(table.name),view:structure?'structure':'data'});
   renderTab();if(structure)await detail(t);else await run(t,0,t.sql);
@@ -295,7 +379,16 @@ function quietRefreshSources(){
 addEventListener('focus',quietRefreshSources);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')quietRefreshSources();});
 if(params.get('mode')!=='preview')setInterval(()=>{if(document.visibilityState==='visible'&&!dbQueue)quietRefreshSources();},4000);
-interface AiDbSyncPayload{action:'save_connection'|'inspect'|'query'|'explain'|'execute'|'focus_view';connectionId?:string;sqlitePath?:string;schema?:string;table?:string;sql?:string;column?:string;row?:number;range?:string;findColumn?:string;findValue?:string;}
+interface AiDbSyncPayload{action:'save_connection'|'inspect'|'query'|'explain'|'execute'|'focus_view';connectionId?:string;sqlitePath?:string;schema?:string;table?:string;sql?:string;column?:string;row?:number;offset?:number;range?:string;findColumn?:string;findValue?:string;}
+function isPlainFullTableSelect(sql:string):boolean{
+  const normalized=sql.trim().replace(/;+$/,'').replace(/\s+/g,' ');
+  if(!/^SELECT\s+\*\s+FROM\s+/i.test(normalized))return false;
+  if(/\bLIMIT\s+[1-5]\b/i.test(normalized))return false;
+  return !/\b(?:WHERE|JOIN|GROUP\s+BY|HAVING|UNION|INTERSECT|EXCEPT)\b/i.test(normalized);
+}
+function stripSqlIdent(raw:string):string{
+  return raw.trim().replace(/^[`"'\[]+|[`"'\]]+$/g,'');
+}
 function extractSqlTable(sql:string):{schema?:string;table:string}|undefined{
   const match=sql.match(/\bFROM\s+(?:[`"']?([\w-]+)[`"']?\.)?[`"']?([\w-]+)[`"']?/i);
   if(!match||!match[2])return undefined;
@@ -334,11 +427,6 @@ function enqueueAiDbSync(detail:AiDbSyncPayload){
       const schema=detail.schema??src.schema;
       if(schema){
         await openSchema(src,schema,false);
-        if(detail.table){
-          const found=src.tables.get(schema)?.find(t=>t.name===detail.table)??{name:detail.table,kind:'table'};
-          await openTable(src,schema,found,true);
-          status(`已同步 AI 表结构 · ${detail.table}`);
-        }
       }
       return;
     }
@@ -349,19 +437,21 @@ function enqueueAiDbSync(detail:AiDbSyncPayload){
       const schema=detail.schema??parsed?.schema??src.schema;
       const table=detail.table??parsed?.table;
       if(!table&&(!sql||!/\bFROM\b/i.test(sql)))return;
-      if(schema&&table){
+      const queryLabel='AI 查询';
+      if(schema&&table&&(!sql||isPlainFullTableSelect(sql))){
         await openSchema(src,schema,false);
-        const existing=store.tabs.find(t=>t.source?.key===src.key&&t.schema===schema&&t.table===table);
+        const existing=store.tabs.find(t=>t.label!==queryLabel&&t.source?.key===src.key&&t.schema===schema&&t.table===table);
         const tab=existing??store.open({label:table,source:src,schema,table,sql:sql||('SELECT * FROM '+quote(src.connection?.driver??'sqlite',schema)+'.'+quote(src.connection?.driver??'sqlite',table)),view:'data'});
         store.active=tab.id;tab.view='data';if(sql)tab.sql=sql;
-        renderTab();await run(tab,0,tab.sql);
+        renderTab();scrollActiveTableIntoView();await run(tab,0,tab.sql);
         status(`已同步 AI 打开表 · ${table}`);
       }else if(sql){
+        const existingAi=store.tabs.find(t=>t.label===queryLabel);
         const reuse=!store.tab.executed&&!store.tab.table&&!store.tab.patches.size;
-        const tab=reuse?store.tab:store.open({label:table??'AI 查询',source:src,sql,view:'data'});
-        tab.source=src;tab.sql=sql;tab.view='data';store.active=tab.id;
+        const tab=existingAi??(reuse?store.tab:store.open({label:queryLabel,source:src,sql,view:'data'}));
+        tab.label=queryLabel;tab.source=src;tab.sql=sql;tab.view='data';store.active=tab.id;
         renderTab();await run(tab,0,sql);
-        status('已同步 AI 查询视图');
+        status(`已同步 AI 查询视图${table?` · ${table}`:''}`);
       }
       return;
     }
@@ -382,25 +472,40 @@ function enqueueAiDbSync(detail:AiDbSyncPayload){
       return;
     }
     if(detail.action==='focus_view'){
-      const targetTable=detail.table?.trim();
+      const rawTable=detail.table?.trim();
+      const dotIdx=rawTable?rawTable.indexOf('.'):-1;
+      const parsedSchema=dotIdx>0?stripSqlIdent(rawTable!.slice(0,dotIdx)):undefined;
+      const targetTable=dotIdx>0?stripSqlIdent(rawTable!.slice(dotIdx+1)):rawTable?stripSqlIdent(rawTable):undefined;
+      const targetOffset=typeof detail.offset==='number'&&Number.isFinite(detail.offset)&&detail.offset>=0?Math.floor(detail.offset):undefined;
       if(targetTable){
         await openSource(src,false);
-        const schema=detail.schema??src.schema;
+        const schema=(detail.schema?stripSqlIdent(detail.schema):undefined)??parsedSchema??src.schema;
         if(schema){
           await openSchema(src,schema,false);
-          const existing=store.tabs.find(t=>t.source?.key===src.key&&t.table?.toLowerCase()===targetTable.toLowerCase());
+          const existing=store.tabs.find(t=>t.label!=='AI 查询'&&t.source?.key===src.key&&t.table?.toLowerCase()===targetTable.toLowerCase());
           if(existing){
-            store.active=existing.id;existing.view='data';renderTab();
-            if(!existing.page&&existing.sql)await run(existing,0,existing.sql);
+            const switching=store.active!==existing.id;
+            store.active=existing.id;existing.view='data';
+            if(switching)renderTab();
+            else {renderTree();renderResult(false);}
+            scrollActiveTableIntoView();
+            const needJump=targetOffset!==undefined&&existing.page?.offset!==targetOffset;
+            if((!existing.page||needJump)&&existing.sql)await run(existing,targetOffset??0,existing.sql);
           }else{
-            const found=src.tables.get(schema)?.find(t=>t.name.toLowerCase()===targetTable.toLowerCase())??{name:targetTable,kind:'table'};
-            await openTable(src,schema,found,false);
+            const found=src.tables.get(schema)?.find(t=>t.name.toLowerCase()===targetTable.toLowerCase())??{name:targetTable,kind:'table',estimated_rows:null};
+            const q=(n:string)=>quote(src.connection?.driver??'sqlite',n);
+            const t=store.open({label:found.name,source:src,schema,table:found.name,sql:'SELECT * FROM '+q(schema)+'.'+q(found.name),view:'data'});
+            renderTab();scrollActiveTableIntoView();
+            await run(t,targetOffset??0,t.sql);
           }
         }
+      }else if(targetOffset!==undefined&&store.tab.sql&&store.tab.page?.offset!==targetOffset){
+        await run(store.tab,targetOffset,store.tab.executed||store.tab.sql);
       }
       if(store.tab.view!=='data'){store.tab.view='data';renderResult(false);}
       const picked=grid.selectTarget({column:detail.column,row:detail.row,range:detail.range,findColumn:detail.findColumn,findValue:detail.findValue});
-      if(picked)status(`已定位到 ${picked}`);
+      if(picked)status(`已定位到 ${picked}${targetOffset?`（分页偏移 ${targetOffset}）`:''}`);
+      else if(targetTable)status(`已选中并打开表 · ${targetTable}`);
     }
   }).catch(()=>{});
 }
