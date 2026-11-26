@@ -72,12 +72,45 @@ impl Workspace {
         Ok(Self { root, dir })
     }
     fn resolve(&self, input: &str, allowed: &[&str]) -> Result<(Dir, String, PathBuf)> {
-        ensure!(!input.contains(['\\', '\0', ':']), "invalid workspace path");
-        let p = Path::new(input);
+        ensure!(!input.is_empty() && !input.contains('\0'), "invalid workspace path");
+        #[cfg(not(windows))]
+        ensure!(!input.contains(['\\', ':']), "invalid workspace path");
+        #[cfg(windows)]
+        let cleaned_input = input
+            .strip_prefix(r"\\?\")
+            .or_else(|| input.strip_prefix("//?/"))
+            .unwrap_or(input)
+            .replace('\\', "/");
+        #[cfg(not(windows))]
+        let cleaned_input = input.to_owned();
+        let p = Path::new(&cleaned_input);
+        let p_owned: PathBuf;
         let p = if p.is_absolute() {
-            p.strip_prefix(&self.root)
-                .context("path is outside workspace")?
+            if let Ok(rel) = p.strip_prefix(&self.root) {
+                rel
+            } else {
+                let root_str = self.root.to_string_lossy();
+                let clean_root = root_str
+                    .strip_prefix(r"\\?\")
+                    .or_else(|| root_str.strip_prefix("//?/"))
+                    .unwrap_or(&root_str)
+                    .replace('\\', "/");
+                #[cfg(windows)]
+                let stripped = cleaned_input
+                    .to_ascii_lowercase()
+                    .strip_prefix(&clean_root.to_ascii_lowercase())
+                    .map(|_| cleaned_input[clean_root.len()..].trim_start_matches('/'));
+                #[cfg(not(windows))]
+                let stripped = cleaned_input
+                    .strip_prefix(&clean_root)
+                    .map(|rest| rest.trim_start_matches('/'));
+                let rel = stripped.context("path is outside workspace")?;
+                p_owned = PathBuf::from(rel);
+                p_owned.as_path()
+            }
         } else {
+            #[cfg(windows)]
+            ensure!(!cleaned_input.contains(':'), "invalid workspace path");
             p
         };
         ensure!(extension(p, allowed), "unexpected workspace file extension");

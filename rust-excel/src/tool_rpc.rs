@@ -35,6 +35,7 @@ const NAMES: [&str; 9] = [
 ];
 
 struct Workspace {
+    root: std::path::PathBuf,
     dir: Dir,
 }
 impl Workspace {
@@ -43,20 +44,67 @@ impl Workspace {
             Path::new(root).is_absolute(),
             "workspace_root must be absolute"
         );
+        let canonical = std::fs::canonicalize(root).context("open workspace")?;
         Ok(Self {
-            dir: Dir::open_ambient_dir(root, ambient_authority()).context("open workspace")?,
+            dir: Dir::open_ambient_dir(&canonical, ambient_authority()).context("open workspace")?,
+            root: canonical,
         })
     }
     fn path(&self, path: &str) -> Result<(Dir, String)> {
         ensure!(
-            !path.contains(['\\', ':', '\0'])
-                && Path::new(path)
-                    .extension()
-                    .is_some_and(|s| s.eq_ignore_ascii_case("xlsx")),
+            !path.is_empty() && !path.contains('\0'),
+            "expected a workspace-relative .xlsx path"
+        );
+        #[cfg(not(windows))]
+        ensure!(
+            !path.contains(['\\', ':']),
+            "expected a workspace-relative .xlsx path"
+        );
+        #[cfg(windows)]
+        let cleaned = path
+            .strip_prefix(r"\\?\")
+            .or_else(|| path.strip_prefix("//?/"))
+            .unwrap_or(path)
+            .replace('\\', "/");
+        #[cfg(not(windows))]
+        let cleaned = path.to_owned();
+        let candidate = Path::new(&cleaned);
+        let rel_owned: std::path::PathBuf;
+        let rel = if candidate.is_absolute() {
+            let root_str = self.root.to_string_lossy();
+            let clean_root = root_str
+                .strip_prefix(r"\\?\")
+                .or_else(|| root_str.strip_prefix("//?/"))
+                .unwrap_or(&root_str)
+                .replace('\\', "/");
+            #[cfg(windows)]
+            let stripped = cleaned
+                .to_ascii_lowercase()
+                .strip_prefix(&clean_root.to_ascii_lowercase())
+                .map(|_| cleaned[clean_root.len()..].trim_start_matches('/'));
+            #[cfg(not(windows))]
+            let stripped = cleaned
+                .strip_prefix(&clean_root)
+                .map(|rest| rest.trim_start_matches('/'));
+            let rest = stripped.context("path must be relative and stay within workspace")?;
+            rel_owned = std::path::PathBuf::from(rest);
+            rel_owned.as_path()
+        } else {
+            #[cfg(windows)]
+            ensure!(
+                !cleaned.contains(':'),
+                "expected a workspace-relative .xlsx path"
+            );
+            candidate
+        };
+        ensure!(
+            rel.extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("xlsx")),
             "expected a workspace-relative .xlsx path"
         );
         let mut dir = self.dir.try_clone()?;
-        let mut parts = Path::new(path).components().peekable();
+        let mut parts = rel.components().peekable();
         while let Some(part) = parts.next() {
             match part {
                 Component::Normal(name) if parts.peek().is_none() => {

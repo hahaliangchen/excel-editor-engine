@@ -120,11 +120,17 @@ pub struct Config {
 }
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let dir = if let Some(p) = std::env::var_os("DB_STUDIO_DATA_DIR") {
+        let dir = if let Some(p) = std::env::var_os("DB_STUDIO_DATA_DIR").filter(|v| !v.is_empty()) {
             PathBuf::from(p)
+        } else if let Some(home) = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .filter(|v| !v.is_empty())
+        {
+            PathBuf::from(home).join(".config").join("grow-db")
+        } else if let Some(appdata) = std::env::var_os("APPDATA").filter(|v| !v.is_empty()) {
+            PathBuf::from(appdata).join("grow-db")
         } else {
-            PathBuf::from(std::env::var_os("HOME").context("HOME is required")?)
-                .join(".config/grow-db")
+            anyhow::bail!("HOME or USERPROFILE is required");
         };
         ensure!(dir.is_absolute(), "DB_STUDIO_DATA_DIR must be absolute");
         Ok(Self { dir })
